@@ -44,3 +44,9 @@ No SDK needed: `build.bat` compiles `KinetikHub.cs` with the .NET Framework comp
 ## License
 
 [GPL-3.0-or-later](LICENSE). Copyright © 2026 Akila Sella Hennedige.
+
+## Local maintenance build 1.0.1
+
+Includes the approved 16 October 2026 diagnostics fixes. Cross-compilation and regression results are recorded in the Apps diagnostics report; Windows GUI and hardware validation remains pending. Run `python tests/run-tests.py` for non-GUI regressions, and `build.bat package` to compile and create a hash-verified release package. Shared support is compiled into the EXE; no additional runtime DLL is required.
+
+Hub updates require a GitHub asset SHA-256 digest or an executable SHA-256 in the release notes. The packager prints the supported release-note line. Older unverified releases must be installed manually. Graceful restarts require updated companions; close older companions from their own tray menu before updating them. Hub reports a failure instead of force-killing them.

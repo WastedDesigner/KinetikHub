@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 static class Program
 {
-    public const string Version = "1.0.0";
+    public const string Version = "1.0.1";
     public static bool Demo, AtStartup;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -73,7 +73,9 @@ static class Program
             Backup.KeyName = "KinetikHub"; Backup.AppTitle = "Kinetik Hub";
             Startup.Args = " --startup";
             if (!Demo) Backup.OfferRestore();
-            Application.Run(new HubContext());
+            var app = new HubContext();
+            using (new KinetikSuite.Shutdown("KinetikHub" + (Demo ? "Demo" : ""), app.ExitHub))
+                Application.Run(app);
         }
         if (!Demo) Backup.AfterExit();
         return 0;
@@ -146,16 +148,18 @@ class Settings
                             else if (f.FieldType == typeof(int)) f.SetValue(s, Convert.ToInt32(v));
                             else f.SetValue(s, Convert.ToInt32(v) != 0);
                         }
-                        catch { }
+                        catch { ok = false; }
                     }
         }
         catch { ok = false; }
-        return s;
+        KinetikSuite.SettingsValidation.Sanitize(s); return s;
     }
 
     public void Save()
     {
         if (Program.Demo || Unreadable) return;
+        KinetikSuite.SettingsValidation.Sanitize(this);
+        if (KinetikSuite.RegistryFiles.CannotSave) return;
         try
         {
             using (var k = Registry.CurrentUser.CreateSubKey(KeyPath))
@@ -214,7 +218,7 @@ class AppDef
     public static readonly AppDef[] All =
     {
         new AppDef { Id = "Kinetik", Title = "Kinetik", Folder = "Kinetik", Source = "kinetik", Repo = "WastedDesigner/Kinetik", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
-        new AppDef { Id = "KinetikScreen", Title = "Kinetik Screen", Folder = "Kinetik", Blurb = "Sensor panel companion" },
+        new AppDef { Id = "KinetikScreen", Title = "Kinetik Screen", Folder = "Kinetik Screen", Source = "KinetikScreen", Blurb = "Sensor panel companion" },
         new AppDef { Id = "KinetikCalendar", Title = "Kinetik Calendar", Folder = "Kinetik Calendar", Source = "KinetikCalendar", Repo = "WastedDesigner/KinetikCalendar", ThemeField = "ThemeName", Blurb = "Calendar widget" },
         new AppDef { Id = "KinetikClock", Title = "Kinetik Clock", Folder = "Kinetik Clock", Source = "KinetikClock", Repo = "WastedDesigner/KinetikClock", ThemeField = "ThemeName", Blurb = "World clock widget" },
         new AppDef { Id = "KinetikFeeds", Title = "Kinetik Feeds", Folder = "Kinetik Feeds", Source = "KinetikFeeds", Repo = "WastedDesigner/KinetikFeeds", ThemeField = "ThemeName", Blurb = "News headlines widget" },
@@ -321,28 +325,27 @@ static class Places
         catch { return false; }
     }
 
-    public static bool Same(string a, string b)
+    sealed class CachedFile { public long Length, Stamp; public DateTime At; public string Hash; public Version Version; }
+    static readonly object fileGate = new object();
+    static readonly Dictionary<string, CachedFile> fileCache = new Dictionary<string, CachedFile>(StringComparer.OrdinalIgnoreCase);
+    public static void InvalidateFiles() { lock (fileGate) fileCache.Clear(); }
+    static CachedFile Inspect(string path, bool needHash)
     {
-        var fa = new FileInfo(a); var fb = new FileInfo(b);
-        if (fa.Length != fb.Length) return false;
-        using (var sha = System.Security.Cryptography.SHA256.Create())
+        var info = new FileInfo(path);
+        lock (fileGate)
         {
-            byte[] ha, hb;
-            using (var s = File.OpenRead(a)) ha = sha.ComputeHash(s);
-            using (var s = File.OpenRead(b)) hb = sha.ComputeHash(s);
-            return ha.SequenceEqual(hb);
+            CachedFile entry;
+            if (fileCache.TryGetValue(path, out entry) && entry.Length == info.Length && entry.Stamp == info.LastWriteTimeUtc.Ticks &&
+                (DateTime.UtcNow - entry.At).TotalSeconds < 30 && (!needHash || entry.Hash != null)) return entry;
+            var version = FileVersionInfo.GetVersionInfo(path);
+            entry = new CachedFile { Length = info.Length, Stamp = info.LastWriteTimeUtc.Ticks, At = DateTime.UtcNow,
+                Version = new Version(version.FileMajorPart, version.FileMinorPart, Math.Max(0, version.FileBuildPart)),
+                Hash = needHash ? KinetikSuite.Hashes.FileHash(path) : null };
+            fileCache[path] = entry; return entry;
         }
     }
-
-    public static Version VersionOf(string exe)
-    {
-        try
-        {
-            var v = FileVersionInfo.GetVersionInfo(exe);
-            return new Version(v.FileMajorPart, v.FileMinorPart, v.FileBuildPart);
-        }
-        catch { return null; }
-    }
+    public static bool Same(string a, string b) { return Inspect(a, true).Hash == Inspect(b, true).Hash; }
+    public static Version VersionOf(string exe) { try { return Inspect(exe, false).Version; } catch { return null; } }
 
     public static string Short(Version v) { return v == null ? "?" : v.Major + "." + v.Minor + "." + Math.Max(0, v.Build); }
 
@@ -367,7 +370,25 @@ static class Places
 // ======================================================================= Running, starting and stopping the apps
 static class Running
 {
-    public static Process[] Of(AppDef a) { try { return Process.GetProcessesByName(a.Id); } catch { return new Process[0]; } }
+    static readonly object processGate = new object();
+    static readonly Dictionary<string, Tuple<DateTime, int[]>> processes = new Dictionary<string, Tuple<DateTime, int[]>>();
+    public static void Invalidate() { lock (processGate) processes.Clear(); }
+    public static Process[] Of(AppDef a)
+    {
+        lock (processGate)
+        {
+            Tuple<DateTime, int[]> cached;
+            if (!processes.TryGetValue(a.Id, out cached) || (DateTime.UtcNow - cached.Item1).TotalSeconds >= 1)
+            {
+                var current = Process.GetProcessesByName(a.Id);
+                try { cached = Tuple.Create(DateTime.UtcNow, current.Select(p => p.Id).ToArray()); processes[a.Id] = cached; }
+                finally { foreach (var p in current) p.Dispose(); }
+            }
+            var live = new List<Process>();
+            foreach (var id in cached.Item2) try { var p = Process.GetProcessById(id); if (p.ProcessName == a.Id) live.Add(p); else p.Dispose(); } catch { }
+            return live.ToArray();
+        }
+    }
     public static bool Is(AppDef a) { var ps = Of(a); foreach (var p in ps) p.Dispose(); return ps.Length > 0; }
 
     // null when it isn't running or (running as administrator) its path can't be read
@@ -397,23 +418,78 @@ static class Running
             // Kinetik's bar quits at once if its single-instance lock is still held (e.g. by a companion just after the
             // old copy was stopped); --restart makes it wait for the lock instead.
             if (a.Admin) psi.Arguments = "--restart";
-            Process.Start(psi);
+            Process.Start(psi); Invalidate();
             return true;
         }
         catch { return false; } // e.g. the admin prompt was turned down
     }
 
-    // The widgets are tool windows without a main window to close, so they're ended outright. They save their settings
-    // as soon as anything changes, so nothing is lost. False if one couldn't be stopped (e.g. it runs as administrator).
+    // Ask the UI thread to flush pending work and close. An unresponsive or older
+    // companion is left running, so deployment and settings writes can safely stop.
     public static bool Stop(AppDef a)
     {
         bool ok = true;
-        foreach (var p in Of(a))
-            using (p)
-                try { p.Kill(); p.WaitForExit(4000); }
+        var processes = Of(a);
+        try
+        {
+            if (processes.Length == 0) return true;
+            bool signalled = KinetikSuite.Shutdown.Request(a.Id);
+            foreach (var p in processes)
+            {
+                try
+                {
+                    if (!signalled && !p.CloseMainWindow()) { ok = false; continue; }
+                    if (!p.WaitForExit(15000)) ok = false;
+                }
                 catch { ok = false; }
-        return ok;
+            }
+            Invalidate(); return ok && !Is(a);
+        }
+        finally { foreach (var p in processes) p.Dispose(); }
     }
+
+    public static string WithStopped(IEnumerable<AppDef> targets, Action apply)
+    {
+        var stopped = new List<AppDef>(); var errors = new List<string>();
+        try
+        {
+            foreach (var app in targets.Where(Is))
+            {
+                if (!Stop(app)) { errors.Add("Could not close " + app.Title + " safely. No requested settings were changed."); break; }
+                stopped.Add(app);
+            }
+            if (errors.Count == 0) apply();
+        }
+        catch (Exception ex) { errors.Add(ex.Message); }
+        finally
+        {
+            foreach (var app in stopped)
+                try { if (!StartVerified(app, Places.Installed(app), false)) errors.Add(app.Title + " did not restart."); }
+                catch (Exception ex) { errors.Add(app.Title + ": " + ex.Message); }
+        }
+        return errors.Count == 0 ? null : string.Join("\n", errors);
+    }
+
+    public static bool StartVerified(AppDef a, string exe, bool admin)
+    {
+        if (!Start(a, exe, admin)) return false;
+        var until = DateTime.UtcNow.AddSeconds(15); DateTime seen = DateTime.MinValue; int seenPid = -1;
+        do
+        {
+            foreach (var p in Of(a)) using (p)
+                try
+                {
+                    if (string.Equals(Path.GetFullPath(p.MainModule.FileName), Path.GetFullPath(exe), StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (p.Id != seenPid) { seenPid = p.Id; seen = DateTime.UtcNow; }
+                        if ((DateTime.UtcNow - seen).TotalMilliseconds >= 1500 && !p.HasExited) return true;
+                    }
+                } catch { }
+            Thread.Sleep(200);
+        } while (DateTime.UtcNow < until);
+        return false;
+    }
+
 }
 
 // The apps' own ways of starting at login: a shortcut in the Startup folder or a value under HKCU\...\Run.
@@ -450,6 +526,46 @@ static class OwnStartup
         }
         catch { }
         return list;
+    }
+
+    public static int BarState(out string detail)
+    {
+        detail = "Kinetik manages its administrator startup task.";
+        object service = null, folder = null, task = null, definition = null, actions = null, action = null;
+        try
+        {
+            using (var run = Registry.CurrentUser.OpenSubKey(RunKey))
+            {
+                var value = run == null ? null : run.GetValue("Kinetik") as string;
+                if (!string.IsNullOrEmpty(value))
+                {
+                    var path = value.Trim().Trim('"');
+                    if (File.Exists(path)) { detail = "Starts from the Run key: " + path; return 1; }
+                    detail = "The Run key target is missing.";
+                }
+            }
+            service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
+            service.GetType().InvokeMember("Connect", BindingFlags.InvokeMethod, null, service, new object[0]);
+            folder = service.GetType().InvokeMember("GetFolder", BindingFlags.InvokeMethod, null, service, new object[] { "\\" });
+            task = folder.GetType().InvokeMember("GetTask", BindingFlags.InvokeMethod, null, folder, new object[] { "Kinetik" });
+            var enabled = (bool)task.GetType().InvokeMember("Enabled", BindingFlags.GetProperty, null, task, null);
+            definition = task.GetType().InvokeMember("Definition", BindingFlags.GetProperty, null, task, null);
+            actions = definition.GetType().InvokeMember("Actions", BindingFlags.GetProperty, null, definition, null);
+            action = actions.GetType().InvokeMember("Item", BindingFlags.GetProperty, null, actions, new object[] { 1 });
+            var target = action.GetType().InvokeMember("Path", BindingFlags.GetProperty, null, action, null) as string;
+            if (!enabled) { detail = "Kinetik's startup task is disabled."; return 0; }
+            if (target == null || !File.Exists(target)) { detail = "The startup task target is missing."; return 0; }
+            if (!string.Equals(Path.GetFullPath(target), Path.GetFullPath(Places.BarRunning), StringComparison.OrdinalIgnoreCase)) { detail = "The startup task points to an unexpected location: " + target; return 0; }
+            detail = "Starts using the enabled administrator logon task."; return 1;
+        }
+        catch (Exception ex)
+        {
+            var cause = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
+            var com = cause as COMException;
+            if (com != null && (com.ErrorCode == unchecked((int)0x80070002) || com.ErrorCode == unchecked((int)0x8004130F))) { detail = "Kinetik has no startup task."; return 0; }
+            detail = "Startup state could not be read: " + cause.Message; return -1;
+        }
+        finally { foreach (var item in new[] { action, actions, definition, task, folder, service }) if (item != null && Marshal.IsComObject(item)) Marshal.ReleaseComObject(item); }
     }
 
     public static bool Has(AppDef a) { return Shortcuts(a).Any() || RunValues(a).Any(); }
@@ -552,6 +668,27 @@ static class Lnk
     }
 }
 
+static class Jobs
+{
+    static bool busy;
+    public static volatile string Progress = "";
+    public static bool Busy { get { return busy; } }
+    public static void Run(Func<string> work, Action<string> done)
+    {
+        if (busy) { done("Another suite operation is still running. Wait for it to finish."); return; }
+        busy = true; Progress = "Applying app changes…";
+        var ui = new Control(); var handle = ui.Handle;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            string error = null;
+            try { error = work(); } catch (Exception ex) { error = ex.Message; }
+            try { ui.BeginInvoke((Action)(() => { busy = false; Progress = ""; try { done(error); } finally { ui.Dispose(); } })); }
+            catch { busy = false; ui.Dispose(); }
+        });
+    }
+    public static void ShowError(string error) { if (error != null) MessageBox.Show(error, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+}
+
 // ======================================================================= Deploying: a new build or a downloaded release
 static class Deploy
 {
@@ -559,49 +696,35 @@ static class Deploy
     // and starts it again if it was running. Returns null when it worked, else what went wrong.
     public static string Install(AppDef a, string installed, string newExe, string label)
     {
-        if (a.Admin)
-        {
-            try { Copy(installed, newExe, label); } catch (Exception ex) { return "Couldn't copy the new version: " + ex.Message; }
-            return Bar(installed, label);
-        }
+        if (a.Admin) return Elevated.Launch("install", installed, newExe, label);
         bool wasRunning = Running.Is(a);
-        if (wasRunning && !Running.Stop(a)) return a.Title + " couldn't be stopped, so it wasn't updated.";
+        if (wasRunning && !Running.Stop(a)) return a.Title + " could not close safely. Exit it from its tray menu, then try again.";
         try { Copy(installed, newExe, label); }
         catch (Exception ex)
         {
             if (wasRunning) Running.Start(a, installed, false);
-            return "Couldn't copy the new version: " + ex.Message;
+            return ex.Message;
         }
         ExportSettings(a, installed);
-        if (wasRunning) Running.Start(a, installed, false);
+        if (wasRunning && !Running.StartVerified(a, installed, false)) return "Installed, but " + a.Title + " did not restart successfully.";
         return null;
     }
 
     public static void Copy(string installed, string newExe, string label)
     {
-        var old = Places.OldVersionsDir(installed);
-        Directory.CreateDirectory(old);
-        var name = Path.GetFileNameWithoutExtension(installed);
-        var dest = Path.Combine(old, name + "-before-" + label + "-" + DateTime.Now.ToString("yyyy-MM-dd") + ".exe");
-        for (int i = 2; File.Exists(dest); i++) dest = Path.Combine(old, name + "-before-" + label + "-" + DateTime.Now.ToString("yyyy-MM-dd") + "-" + i + ".exe");
-        File.Copy(installed, dest);
-        File.Copy(newExe, installed, true);
-        // the companion "lib" folder (Kinetik's bar has one), if the new exe came with it
+        if (string.Equals(Path.GetFullPath(installed), Path.GetFullPath(newExe), StringComparison.OrdinalIgnoreCase)) throw new IOException("The selected build is already the installed file.");
+        var files = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase) { { Path.GetFileName(installed), File.ReadAllBytes(newExe) } };
         var lib = Path.Combine(Path.GetDirectoryName(newExe), "lib");
-        if (Directory.Exists(lib) && !Path.GetDirectoryName(newExe).Equals(Path.GetDirectoryName(installed), StringComparison.OrdinalIgnoreCase))
-            foreach (var f in Directory.GetFiles(lib, "*", SearchOption.AllDirectories))
-            {
-                var to = Path.Combine(Path.GetDirectoryName(installed), "lib", f.Substring(lib.Length + 1));
-                Directory.CreateDirectory(Path.GetDirectoryName(to));
-                try { File.Copy(f, to, true); } catch { }
-            }
+        if (Directory.Exists(lib))
+            foreach (var f in Directory.GetFiles(lib, "*.dll", SearchOption.AllDirectories)) files["lib/" + f.Substring(lib.Length + 1).Replace('\\', '/')] = File.ReadAllBytes(f);
+        var backup = Path.Combine(Places.OldVersionsDir(installed), "deploy-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+        KinetikSuite.FileTransaction.Install(Path.GetDirectoryName(installed), files, backup);
+        Places.InvalidateFiles();
     }
 
-    // Puts Kinetik's bar build in place: an elevated helper keeps the Program Files copy in Old Versions, stops the bar and
-    // starts the build as administrator, which copies itself into Program Files for the logon task.
     public static string Bar(string build, string label)
     {
-        return Elevated.Launch("deploy", build, Places.OldVersionsDir(build), label) ? null : "The administrator prompt was turned down, so Kinetik wasn't updated.";
+        return Elevated.Launch("deploy", build, Places.OldVersionsDir(build), label);
     }
 
     // reg export HKCU\Software\<Id> to <Id>-settings.reg beside the exe, as each app's own Backup does
@@ -618,20 +741,7 @@ static class Deploy
 
 static class Reg
 {
-    public static bool Run(string args)
-    {
-        try
-        {
-            var psi = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "reg.exe"), args)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            using (var p = Process.Start(psi))
-            {
-                p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
-                return p.WaitForExit(15000) && p.ExitCode == 0;
-            }
-        }
-        catch { return false; }
-    }
+    public static bool Run(string args) { return KinetikSuite.RegistryFiles.Run(args); }
 }
 
 // Kinetik's bar runs as administrator, so stopping, restarting or replacing it takes an elevated helper: Hub runs a
@@ -640,15 +750,22 @@ static class Elevated
 {
     static string Q(string s) { return "\"" + (s ?? "").Replace("\"", "") + "\""; }
 
-    public static bool Launch(params string[] job)
+    public static string Launch(params string[] job)
     {
         try
         {
             var psi = new ProcessStartInfo(Application.ExecutablePath, "--bar " + string.Join(" ", job.Select(Q))) { UseShellExecute = true, Verb = "runas" };
-            using (var p = Process.Start(psi)) p.WaitForExit(60000);
-            return true;
+            using (var p = Process.Start(psi))
+            {
+                // A timed-out helper may still mutate files; do not abandon it and allow
+                // another operation to race it. Wait off the UI thread until it exits.
+                bool exceededDeadline = !p.WaitForExit(60000);
+                if (exceededDeadline) { Jobs.Progress = "Administrator operation exceeded 60 seconds; waiting for it to finish safely."; p.WaitForExit(); }
+                return p.ExitCode == 0 ? (exceededDeadline ? "The helper exceeded its deadline, but has now completed. Verify the app state before continuing." : null) : "The administrator helper failed (code " + p.ExitCode + "). Check that the app closed and its files are writable.";
+            }
         }
-        catch { return false; }
+        catch (System.ComponentModel.Win32Exception ex) { return ex.NativeErrorCode == 1223 ? "The administrator request was cancelled." : ex.Message; }
+        catch (Exception ex) { return ex.Message; }
     }
 
     // Jobs: restart <exe> [s:Name=text | d:Name=number]… · deploy <build> <oldVersionsDir> <label> · stop
@@ -658,11 +775,11 @@ static class Elevated
         try
         {
             string job = a.Length > 0 ? a[0] : "";
-            if (job == "stop") { Running.Stop(bar); return 0; }
-            if (job == "restart" && a.Length >= 2)
+            if (job == "stop") return Running.Stop(bar) ? 0 : 3;
+            if ((job == "restart" || job == "settings") && a.Length >= 2)
             {
-                Running.Stop(bar);
-                Thread.Sleep(600);
+                bool wasRunning = Running.Is(bar);
+                if (wasRunning && !Running.Stop(bar)) return 3;
                 // settings to change while it's stopped, so it can't save its old ones over them
                 using (var k = Registry.CurrentUser.CreateSubKey(bar.Key))
                     foreach (var pair in a.Skip(2))
@@ -675,22 +792,36 @@ static class Elevated
                         if (pair[0] == 'd' && int.TryParse(val, out n)) k.SetValue(name, n, RegistryValueKind.DWord);
                         else if (pair[0] == 's') k.SetValue(name, val);
                     }
-                Running.Start(bar, a[1], false);
-                return 0;
+                return job == "settings" && !wasRunning ? 0 : Running.StartVerified(bar, a[1], false) ? 0 : 4;
+            }
+            if (job == "install" && a.Length >= 4)
+            {
+                bool wasRunning = Running.Is(bar);
+                if (wasRunning && !Running.Stop(bar)) return 3;
+                try
+                {
+                    Deploy.Copy(a[1], a[2], a[3]);
+                    if (File.Exists(Places.BarRunning) && !string.Equals(Path.GetFullPath(a[1]), Path.GetFullPath(Places.BarRunning), StringComparison.OrdinalIgnoreCase))
+                        Deploy.Copy(Places.BarRunning, a[1], a[3]);
+                }
+                catch { if (wasRunning) Running.Start(bar, a[1], false); throw; }
+                return !wasRunning || Running.StartVerified(bar, File.Exists(Places.BarRunning) ? Places.BarRunning : a[1], false) ? 0 : 4;
             }
             if (job == "deploy" && a.Length >= 4)
             {
                 var pf = Places.BarRunning;
-                if (File.Exists(pf))
+                bool wasRunning = Running.Is(bar);
+                if (wasRunning && !Running.Stop(bar)) return 3;
+                try
                 {
-                    Directory.CreateDirectory(a[2]);
-                    var dest = Path.Combine(a[2], "Kinetik-ProgramFiles-before-" + a[3] + "-" + DateTime.Now.ToString("yyyy-MM-dd-HHmm") + ".exe");
-                    if (!File.Exists(dest)) File.Copy(pf, dest);
+                    if (File.Exists(pf))
+                    {
+                        Deploy.Copy(pf, a[1], a[3]);
+                        if (!Places.Same(pf, a[1])) throw new IOException("The installed Kinetik checksum does not match the selected build.");
+                    }
                 }
-                Running.Stop(bar);
-                Thread.Sleep(800); // let it release its files
-                Running.Start(bar, a[1], false); // as administrator, so it refreshes the Program Files copy
-                return 0;
+                catch { if (wasRunning) Running.Start(bar, File.Exists(pf) ? pf : a[1], false); throw; }
+                return Running.StartVerified(bar, File.Exists(pf) ? pf : a[1], false) ? 0 : 4;
             }
         }
         catch (Exception ex) { MessageBox.Show("Kinetik Hub couldn't finish: " + ex.Message, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning); return 1; }
@@ -699,22 +830,14 @@ static class Elevated
 }
 
 // ======================================================================= Updates from GitHub releases
-class Release { public string Tag, Page, Zip; public Version V; }
+class Release { public string Tag, Page, Zip, ZipSha, ExeSha; public Version V; }
 
 static class Updates
 {
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
     static string Get(string url)
-    {
-        using (var wc = new WebClient())
-        {
-            wc.Headers[HttpRequestHeader.UserAgent] = "KinetikHub/" + Program.Version;
-            wc.Headers[HttpRequestHeader.Accept] = "application/vnd.github+json";
-            wc.Encoding = Encoding.UTF8;
-            return wc.DownloadString(url);
-        }
-    }
+    { return KinetikSuite.Http.Text(url, 4 << 20, "KinetikHub/" + Program.Version, CancellationToken.None, 20000, "application/vnd.github+json"); }
 
     public static Version ParseTag(string tag)
     {
@@ -738,6 +861,10 @@ static class Updates
         if (root == null) return null;
         var rel = new Release { Tag = root["tag_name"] as string, Page = root["html_url"] as string };
         rel.V = ParseTag(rel.Tag);
+        object body;
+        var notes = root.TryGetValue("body", out body) ? body as string ?? "" : "";
+        var hash = System.Text.RegularExpressions.Regex.Match(notes, "SHA-256 of `" + System.Text.RegularExpressions.Regex.Escape(a.Exe) + "`:?\\*?\\*?\\s*`([0-9A-Fa-f]{64})`");
+        if (hash.Success) rel.ExeSha = hash.Groups[1].Value.ToUpperInvariant();
         object assets;
         if (root.TryGetValue("assets", out assets) && assets is object[])
             foreach (var o in (object[])assets)
@@ -745,18 +872,24 @@ static class Updates
                 var d = o as Dictionary<string, object>;
                 if (d == null) continue;
                 var name = d["name"] as string ?? "";
-                if (name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) && (rel.Zip == null || name.StartsWith(a.Id, StringComparison.OrdinalIgnoreCase)))
+                if (name.Equals(a.Id + ".zip", StringComparison.OrdinalIgnoreCase))
+                {
                     rel.Zip = d["browser_download_url"] as string;
+                    object digest;
+                    var value = d.TryGetValue("digest", out digest) ? digest as string : null;
+                    if (value != null && System.Text.RegularExpressions.Regex.IsMatch(value, "^sha256:[0-9a-fA-F]{64}$")) rel.ZipSha = value.Substring(7).ToUpperInvariant();
+                }
             }
         return rel;
     }
 
-    public static string Encode(Release r) { return r == null ? "" : (r.Tag ?? "") + "|" + (r.Page ?? "") + "|" + (r.Zip ?? ""); }
+    public static string Encode(Release r) { return r == null ? "" : (r.Tag ?? "") + "|" + (r.Page ?? "") + "|" + (r.Zip ?? "") + "|" + (r.ZipSha ?? "") + "|" + (r.ExeSha ?? ""); }
     public static Release Decode(string s)
     {
         if (string.IsNullOrEmpty(s)) return null;
         var p = s.Split('|');
         var r = new Release { Tag = p[0], Page = p.Length > 1 ? p[1] : "", Zip = p.Length > 2 && p[2] != "" ? p[2] : null };
+        r.ZipSha = p.Length > 3 && p[3] != "" ? p[3] : null; r.ExeSha = p.Length > 4 && p[4] != "" ? p[4] : null;
         r.V = ParseTag(r.Tag);
         return r.V == null ? null : r;
     }
@@ -764,21 +897,43 @@ static class Updates
     // Downloads the release's zip and returns the path of the exe inside it (extracted to a temp folder).
     public static string Download(AppDef a, Release r)
     {
-        var dir = Path.Combine(Path.GetTempPath(), "KinetikHub", a.Id + "-" + r.Tag);
-        if (Directory.Exists(dir)) Directory.Delete(dir, true);
-        Directory.CreateDirectory(dir);
-        var zip = Path.Combine(dir, "release.zip");
-        using (var wc = new WebClient())
+        if (r.ZipSha == null && r.ExeSha == null) throw new IOException("This release has no verified digest. Check for updates again, or install a verified release manually.");
+        if (r.Zip == null || !r.Zip.StartsWith("https://github.com/" + a.Repo + "/releases/download/", StringComparison.Ordinal)) throw new IOException("The release download URL is unexpected.");
+        var bytes = KinetikSuite.Http.Get(r.Zip, 64 << 20, "KinetikHub/" + Program.Version, CancellationToken.None, 60000);
+        if (r.ZipSha != null && !string.Equals(KinetikSuite.Hashes.Of(bytes), r.ZipSha, StringComparison.OrdinalIgnoreCase)) throw new IOException("The release archive checksum does not match.");
+        var dir = Path.Combine(Path.GetTempPath(), "KinetikHub", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
+        try
         {
-            wc.Headers[HttpRequestHeader.UserAgent] = "KinetikHub/" + Program.Version;
-            wc.DownloadFile(r.Zip, zip);
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long expanded = 0; int count = 0;
+            using (var archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read))
+                foreach (var entry in archive.Entries)
+                {
+                    if (++count > 256 || (expanded += entry.Length) > (128 << 20) || entry.Length > (32 << 20)) throw new IOException("The release archive is too large.");
+                    var relative = entry.FullName.Replace('\\', '/');
+                    if (relative.EndsWith("/")) continue;
+                    var target = Path.GetFullPath(Path.Combine(dir, relative));
+                    if (!target.StartsWith(dir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !names.Add(target) || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000) throw new IOException("The archive contains an unsafe or duplicate path.");
+                    Directory.CreateDirectory(Path.GetDirectoryName(target));
+                    using (var input = entry.Open()) using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        var buffer = new byte[16384]; long written = 0; int read;
+                        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                        { written += read; if (written > entry.Length || written > (32 << 20)) throw new IOException("Archive entry exceeded its declared size."); output.Write(buffer, 0, read); }
+                        if (written != entry.Length) throw new IOException("Archive entry was incomplete.");
+                    }
+                }
+            var executables = Directory.GetFiles(dir, a.Exe, SearchOption.AllDirectories);
+            if (executables.Length != 1) throw new IOException("The release must contain exactly one " + a.Exe);
+            var exe = executables[0];
+            if (r.ExeSha != null && !string.Equals(KinetikSuite.Hashes.FileHash(exe), r.ExeSha, StringComparison.OrdinalIgnoreCase)) throw new IOException("The executable checksum does not match.");
+            var identity = AssemblyName.GetAssemblyName(exe).Name;
+            if (identity != a.Id && identity != a.Id + ".new") throw new IOException("The release contains a different application.");
+            if (Places.VersionOf(exe) != r.V) throw new IOException("The executable version does not match the release tag.");
+            return exe;
         }
-        var outDir = Path.Combine(dir, "files");
-        System.IO.Compression.ZipFile.ExtractToDirectory(zip, outDir);
-        var exe = Directory.GetFiles(outDir, a.Exe, SearchOption.AllDirectories).FirstOrDefault();
-        if (exe == null) throw new Exception("The release doesn't contain " + a.Exe);
-        return exe;
+        catch { try { Directory.Delete(dir, true); } catch { } throw; }
     }
+
 }
 
 // ======================================================================= Settings for every app in one file
@@ -843,9 +998,13 @@ static class SuiteBackup
                                    l.StartsWith("[HKEY_CURRENT_USER\\Software\\" + k + "\\", StringComparison.OrdinalIgnoreCase));
             if (on) keep.Append(line).Append("\r\n");
         }
-        var tmp = Path.Combine(Path.GetTempPath(), "KinetikHub-restore.reg");
+        var included = Contents(file);
+        if (included == null) return false;
+        included = included.Where(id => !skip.Contains(id)).ToList();
+        if (included.Count == 0) return true;
+        var tmp = Path.Combine(Path.GetTempPath(), "KinetikHub-restore-" + Guid.NewGuid().ToString("N") + ".reg");
         File.WriteAllText(tmp, keep.ToString(), Encoding.Unicode);
-        try { return Reg.Run("import \"" + tmp + "\""); }
+        try { return KinetikSuite.RegistryFiles.Replace(tmp, included); }
         finally { try { File.Delete(tmp); } catch { } }
     }
 }
@@ -855,7 +1014,7 @@ class HubContext : ApplicationContext
 {
     readonly Settings c = Settings.Load();
     readonly NotifyIcon tray = new NotifyIcon();
-    readonly ContextMenuStrip menu = new ContextMenuStrip();
+    readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     readonly EventWaitHandle showEvent;
     readonly System.Windows.Forms.Timer daily = new System.Windows.Forms.Timer { Interval = 60 * 60 * 1000 };
     readonly Control invoker = new Control();
@@ -928,16 +1087,17 @@ class HubContext : ApplicationContext
     // Starts the apps one after another, 1.2 s apart, so they don't all fight for the disk at login.
     public void StartAll(List<AppDef> apps, Action done)
     {
+        if (Jobs.Busy) { Jobs.ShowError("A suite operation is still running. Try again when it finishes."); return; }
         var queue = new Queue<AppDef>(apps.Where(a => !Running.Is(a)));
         var t = new System.Windows.Forms.Timer { Interval = 1200 };
         bool ended = false;
         Action next = null;
         next = () =>
         {
+            if (Jobs.Busy) return;
             if (queue.Count == 0) { ended = true; t.Stop(); t.Dispose(); Refresh(); if (done != null) done(); return; }
             var a = queue.Dequeue();
-            Running.Start(a, Places.Installed(a), a.Admin);
-            Refresh();
+            Jobs.Run(() => Running.StartVerified(a, Places.Installed(a), a.Admin) ? null : "Could not start " + a.Title + ".", error => { Jobs.ShowError(error); Refresh(); });
         };
         t.Tick += (s, e) => next();
         next();
@@ -947,18 +1107,19 @@ class HubContext : ApplicationContext
     // Restarts the apps that are running now (stopping them all first, then starting them in turn).
     public void RestartRunning(IEnumerable<AppDef> apps, Action<AppDef> whileStopped)
     {
-        var list = apps.Where(a => !a.Admin && Running.Is(a)).ToList();
-        foreach (var a in list) Running.Stop(a);
-        if (whileStopped != null) foreach (var a in apps.Where(x => !x.Admin)) whileStopped(a);
-        StartAll(list, null);
+        var targets = apps.Where(a => !a.Admin).ToList();
+        Jobs.Run(() => Running.WithStopped(targets, () => { if (whileStopped != null) foreach (var app in targets) whileStopped(app); }),
+            error => { Jobs.ShowError(error); Refresh(); });
     }
 
     // Once a day (or now, when asked) checks GitHub for each app's latest release.
+    bool checkingUpdates;
     public void MaybeCheckUpdates(bool now)
     {
-        if (Program.Demo) return;
+        if (Program.Demo || checkingUpdates) return;
         DateTime last;
         if (!now && (!c.CheckUpdates || (DateTime.TryParse(c.LastCheck, null, DateTimeStyles.RoundtripKind, out last) && (DateTime.UtcNow - last).TotalHours < 20))) return;
+        checkingUpdates = true;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -970,6 +1131,7 @@ class HubContext : ApplicationContext
             {
                 invoker.BeginInvoke((Action)(() =>
                 {
+                    checkingUpdates = false;
                     var map = Settings.Map(c.Latest);
                     foreach (var p in found) map[p.Key] = p.Value;
                     c.Latest = Settings.Unmap(map);
@@ -1013,7 +1175,7 @@ class HubContext : ApplicationContext
             bool on = Running.Is(a);
             var it = new ToolStripMenuItem(a.Title + (on ? "" : "   (not running)"));
             if (on) { Add(it.DropDownItems, "Restart", () => HubForm.Restart(this, app)); Add(it.DropDownItems, "Stop", () => HubForm.StopApp(app)); }
-            else Add(it.DropDownItems, "Start", () => { Running.Start(app, Places.Installed(app), app.Admin); Refresh(); });
+            else Add(it.DropDownItems, "Start", () => Jobs.Run(() => Running.StartVerified(app, Places.Installed(app), app.Admin) ? null : "Could not start " + app.Title, error => { Jobs.ShowError(error); Refresh(); }));
             menu.Items.Add(it);
         }
         menu.Items.Add(new ToolStripSeparator());
@@ -1037,6 +1199,7 @@ class HubContext : ApplicationContext
 
     public void ExitHub()
     {
+        if (Jobs.Busy) { Jobs.ShowError("A suite operation is still finishing. Close Hub after it completes."); return; }
         tray.Visible = false;
         if (form != null && !form.IsDisposed) form.Dispose();
         ExitThread();
@@ -1173,6 +1336,7 @@ class HubForm : Form
         foreach (var r in rows) r.RefreshState();
         loginBox.Checked = Startup.IsOn;
         if (c.LastCheck != checkedAt) { checkedAt = c.LastCheck; noteUntil = DateTime.MinValue; }
+        if (Jobs.Busy) { foot.Text = Jobs.Progress; return; }
         if (DateTime.Now < noteUntil) return;
         DateTime last;
         foot.Text = DateTime.TryParse(c.LastCheck, null, DateTimeStyles.RoundtripKind, out last)
@@ -1199,16 +1363,17 @@ class HubForm : Form
     public static void Restart(HubContext hub, AppDef a)
     {
         var exe = Places.Installed(a);
-        if (a.Admin) { Elevated.Launch("restart", File.Exists(Places.BarRunning) ? Places.BarRunning : exe); hub.Refresh(); return; }
-        Running.Stop(a);
-        Running.Start(a, exe, false);
-        hub.Refresh();
+        Jobs.Run(() =>
+        {
+            if (a.Admin) return Elevated.Launch("restart", File.Exists(Places.BarRunning) ? Places.BarRunning : exe);
+            if (!Running.Stop(a)) return "Could not close " + a.Title + " safely. Exit it from its tray menu first.";
+            return Running.StartVerified(a, exe, false) ? null : a.Title + " did not restart.";
+        }, error => { Jobs.ShowError(error); hub.Refresh(); });
     }
 
     public static void StopApp(AppDef a)
     {
-        if (a.Admin) { Elevated.Launch("stop"); return; }
-        if (!Running.Stop(a)) MessageBox.Show(a.Title + " couldn't be stopped.", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        Jobs.Run(() => a.Admin ? Elevated.Launch("stop") : Running.Stop(a) ? null : a.Title + " could not close safely. Exit it from its tray menu.", Jobs.ShowError);
     }
 
     // ---- toolbar
@@ -1247,44 +1412,28 @@ class HubForm : Form
     public void ApplySuite(Dictionary<string, object> v)
     {
         if (Program.Demo || v.Count == 0) return;
-        var apps = AppDef.All.Where(a => a.HasLook && !a.Admin && Places.Installed(a) != null).ToList();
-        hub.RestartRunning(apps, a =>
+        var targets = AppDef.All.Where(a => a.HasLook && !a.Admin && Places.Installed(a) != null).ToList();
+        var bar = AppDef.Get("Kinetik"); var barExe = Places.Installed(bar);
+        bool changeBar = barExe != null && (!Running.Is(bar) || MessageBox.Show("Changing Kinetik's widget requires restarting the bar as administrator. Apply it too?", "Kinetik Hub", MessageBoxButtons.YesNo) == DialogResult.Yes);
+        Jobs.Run(() => Running.WithStopped(targets, () =>
         {
-            try
-            {
-                using (var k = Registry.CurrentUser.OpenSubKey(a.Key)) if (k == null) return; // never run: leave it to choose its own
-                using (var k = Registry.CurrentUser.CreateSubKey(a.Key))
-                    foreach (var p in v)
-                    {
-                        var name = a.Field(p.Key);
-                        if (name == null) continue;
-                        if (p.Value is string) k.SetValue(name, (string)p.Value);
-                        else k.SetValue(name, p.Value is bool ? ((bool)p.Value ? 1 : 0) : (int)p.Value, RegistryValueKind.DWord);
-                    }
-            }
-            catch { }
-        });
-        var bar = AppDef.Get("Kinetik");
-        var barExe = Places.Installed(bar);
-        if (barExe != null)
-        {
-            var pairs = v.Select(p => { var n = bar.Field(p.Key); return n == null ? null : (p.Value is string ? "s:" : "d:") + n + "=" + (p.Value is bool ? ((bool)p.Value ? "1" : "0") : p.Value.ToString()); })
-                         .Where(x => x != null).ToList();
-            if (Running.Is(bar))
-            {
-                if (MessageBox.Show("Kinetik's taskbar bar runs as administrator, so changing its desktop widget means restarting it as administrator.\n\nDo that now?",
-                        "Kinetik Hub", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                    Elevated.Launch(new[] { "restart", Places.BarRunning }.Concat(pairs).ToArray());
-            }
-            else
-                try
+                foreach (var a in targets)
                 {
-                    using (var k = Registry.CurrentUser.CreateSubKey(bar.Key))
-                        foreach (var p in v) { var n = bar.Field(p.Key); if (n == null) continue; if (p.Value is string) k.SetValue(n, (string)p.Value); else k.SetValue(n, p.Value is bool ? ((bool)p.Value ? 1 : 0) : (int)p.Value, RegistryValueKind.DWord); }
+                    using (var existing = Registry.CurrentUser.OpenSubKey(a.Key)) if (existing == null) continue;
+                    using (var key = Registry.CurrentUser.CreateSubKey(a.Key)) foreach (var pair in v)
+                    {
+                        var name = a.Field(pair.Key); if (name == null) continue;
+                        if (pair.Value is string) key.SetValue(name, (string)pair.Value);
+                        else key.SetValue(name, pair.Value is bool ? ((bool)pair.Value ? 1 : 0) : (int)pair.Value, RegistryValueKind.DWord);
+                    }
                 }
-                catch { }
-        }
-        Note("Applied " + string.Join(", ", v.Keys.Select(SuiteForm.Label)) + " to every app that has them.");
+                if (changeBar)
+                {
+                    var pairs = v.Select(pair => (pair.Value is string ? "s:" : "d:") + bar.Field(pair.Key) + "=" + (pair.Value is bool ? ((bool)pair.Value ? "1" : "0") : pair.Value.ToString()));
+                    var barError = Elevated.Launch(new[] { "settings", File.Exists(Places.BarRunning) ? Places.BarRunning : barExe }.Concat(pairs).ToArray());
+                    if (barError != null) throw new IOException(barError);
+                }
+        }), error => { if (error != null) Jobs.ShowError(error); else Note("Applied shared settings" + (changeBar ? "." : " to the companion apps; the bar was left unchanged.")); hub.Refresh(); });
     }
 
     void BackupAll()
@@ -1322,12 +1471,11 @@ class HubForm : Form
             if (ids.Contains("KinetikHub")) skip.Add("KinetikHub"); // Hub is running; its own settings are restored from its own Backup menu
             var apps = AppDef.All.Where(a => ids.Contains(a.Id) && !skip.Contains(a.Id)).ToList();
             // stopped first, so none of them can save over the restored settings; then imported; then started again
-            var wasRunning = apps.Where(a => !a.Admin && Running.Is(a)).ToList();
-            foreach (var a in wasRunning) Running.Stop(a);
-            bool ok = SuiteBackup.Restore(dlg.FileName, skip);
-            hub.StartAll(wasRunning, null);
-            if (!ok) MessageBox.Show("Couldn't restore the settings.", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            else Note("Settings restored for " + string.Join(", ", apps.Select(a => a.Title)) + ".");
+            var file = dlg.FileName;
+            Jobs.Run(() => Running.WithStopped(apps, () =>
+            {
+                if (!SuiteBackup.Restore(file, skip)) throw new IOException("Could not restore the settings.");
+            }), error => { if (error != null) Jobs.ShowError(error); else Note("Settings restored for " + string.Join(", ", apps.Select(app => app.Title)) + "."); hub.Refresh(); });
         }
     }
 }
@@ -1342,7 +1490,7 @@ class AppRow : Panel
     readonly Label name = new Label { AutoSize = false }, where = new Label { AutoSize = false }, news = new Label { AutoSize = false };
     readonly CheckBox login = new CheckBox { Text = "At login" };
     readonly FlatBtn run, stop, deploy, more;
-    readonly ContextMenuStrip moreMenu = new ContextMenuStrip();
+    readonly ContextMenuStrip moreMenu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     string iconFor, whereTip;
     bool syncing;
     readonly ToolTip tips = new ToolTip();
@@ -1423,7 +1571,14 @@ class AppRow : Panel
         run.Text = on ? "Restart" : "Start";
         stop.Enabled = on;
         syncing = true;
-        login.Checked = a.Admin || C.Starts(a.Id);
+        if (a.Admin)
+        {
+            string description = "Demo startup state"; int startupState = Program.Demo ? 1 : OwnStartup.BarState(out description);
+            login.ThreeState = true;
+            login.CheckState = startupState < 0 ? CheckState.Indeterminate : startupState > 0 ? CheckState.Checked : CheckState.Unchecked;
+            tips.SetToolTip(login, description);
+        }
+        else login.Checked = C.Starts(a.Id);
         login.Enabled = exe != null && !a.Admin; // Kinetik's bar keeps its own administrator logon task
         syncing = false;
     }
@@ -1431,9 +1586,7 @@ class AppRow : Panel
     void OnRun()
     {
         if (Running.Is(a)) HubForm.Restart(owner.Hub, a);
-        else if (!Running.Start(a, Places.Installed(a), a.Admin) && !a.Admin)
-            MessageBox.Show("Couldn't start " + a.Title + ".", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        RefreshState();
+        else Jobs.Run(() => Running.StartVerified(a, Places.Installed(a), a.Admin) ? null : "Could not start " + a.Title + ".", error => { Jobs.ShowError(error); owner.RefreshRows(); });
     }
 
     void OnLogin()
@@ -1473,16 +1626,16 @@ class AppRow : Panel
         {
             if (MessageBox.Show("Put the new build of Kinetik (built " + File.GetLastWriteTime(exe).ToString("d MMM, h:mm tt") + ") in place?\n\n" +
                     "It runs as administrator, so Windows asks first. The current copy in Program Files is kept in Old Versions.", "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-            Finish(Deploy.Bar(exe, "build-" + DateTime.Now.ToString("HHmm")), "Kinetik is running its new build.");
+            Perform(() => Deploy.Bar(exe, "build-" + DateTime.Now.ToString("HHmm")), "Kinetik is running its new build.");
             return;
         }
-        if (Places.RestartPending(a, exe)) { HubForm.Restart(owner.Hub, a); owner.Note(a.Title + " restarted on its new build."); RefreshState(); return; }
+        if (Places.RestartPending(a, exe)) { HubForm.Restart(owner.Hub, a); RefreshState(); return; }
         if (exe != build && Places.BuildIsNewer(a, exe, build))
         {
             var bv = Places.VersionOf(build);
             if (MessageBox.Show("Install the new build of " + a.Title + " (v" + Places.Short(bv) + ", built " + File.GetLastWriteTime(build).ToString("d MMM, h:mm tt") + ")?\n\n" +
                     "The current one is kept in Old Versions" + (Running.Is(a) ? ", and " + a.Title + " restarts" : "") + ".", "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-            Finish(Deploy.Install(a, exe, build, "build-" + DateTime.Now.ToString("HHmm")), "Deployed the new build of " + a.Title + ".");
+            Perform(() => Deploy.Install(a, exe, build, "build-" + DateTime.Now.ToString("HHmm")), "Deployed the new build of " + a.Title + ".");
             return;
         }
         var upd = owner.Hub.UpdateFor(a);
@@ -1499,12 +1652,15 @@ class AppRow : Panel
                 {
                     deploy.Enabled = true;
                     if (err != null) { MessageBox.Show("Couldn't download the update: " + err, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning); RefreshState(); return; }
-                    Finish(Deploy.Install(a, exe, newExe, upd.Tag), a.Title + " is now on " + upd.Tag + ".");
+                    Perform(() => Deploy.Install(a, exe, newExe, upd.Tag), a.Title + " is now on " + upd.Tag + ".");
                 }));
             }
             catch { }
         });
     }
+
+    void Perform(Func<string> work, string ok)
+    { deploy.Enabled = false; Jobs.Run(work, error => { if (!IsDisposed) { deploy.Enabled = true; Finish(error, ok); } }); }
 
     void Finish(string err, string ok)
     {
@@ -2037,22 +2193,8 @@ static class Backup
         }
     }
 
-    static bool Reg(string args)
-    {
-        try
-        {
-            var psi = new System.Diagnostics.ProcessStartInfo(System.IO.Path.Combine(Environment.SystemDirectory, "reg.exe"), args)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            using (var p = System.Diagnostics.Process.Start(psi))
-            {
-                p.StandardOutput.ReadToEnd(); p.StandardError.ReadToEnd();
-                return p.WaitForExit(15000) && p.ExitCode == 0;
-            }
-        }
-        catch { return false; }
-    }
+    static bool Reg(string args) { return KinetikSuite.RegistryFiles.Run(args); }
 
-    // A restore may only write this app's own key, so an edited or swapped file can't change anything else.
     static bool FileIsOurs()
     {
         try
@@ -2071,7 +2213,11 @@ static class Backup
         catch { return false; }
     }
 
-    static bool Import() { return FileIsOurs() && Reg("import \"" + FilePath + "\""); }
+    static bool Import()
+    {
+        try { return FileIsOurs() && KinetikSuite.RegistryFiles.Replace(FilePath, new[] { KeyName }); }
+        catch (Exception ex) { Say(ex.Message, MessageBoxIcon.Warning); return false; }
+    }
 
     static void Say(string text, MessageBoxIcon icon) { MessageBox.Show(text, AppTitle, MessageBoxButtons.OK, icon); }
 
