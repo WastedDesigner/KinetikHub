@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 static class Program
 {
-    public const string Version = "1.0.1";
+    public const string Version = "1.0.2";
     public static bool Demo, AtStartup;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -1016,6 +1016,7 @@ class HubContext : ApplicationContext
     readonly NotifyIcon tray = new NotifyIcon();
     readonly ContextMenuStrip menu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
     readonly EventWaitHandle showEvent;
+    readonly RegisteredWaitHandle showWait;
     readonly System.Windows.Forms.Timer daily = new System.Windows.Forms.Timer { Interval = 60 * 60 * 1000 };
     readonly Control invoker = new Control();
     HubForm form;
@@ -1035,7 +1036,7 @@ class HubContext : ApplicationContext
 
         bool createdNew;
         showEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowSignal.EventName + (Program.Demo ? "Demo" : ""), out createdNew);
-        ThreadPool.RegisterWaitForSingleObject(showEvent, (st, to) => { try { invoker.BeginInvoke((Action)ShowHub); } catch { } }, null, -1, false);
+        showWait = ThreadPool.RegisterWaitForSingleObject(showEvent, (st, to) => KinetikSuite.Ui.Post(invoker, ShowHub), null, -1, false);
 
         daily.Tick += (s, e) => MaybeCheckUpdates(false);
         daily.Start();
@@ -1207,7 +1208,7 @@ class HubContext : ApplicationContext
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { tray.Dispose(); menu.Dispose(); daily.Dispose(); showEvent.Dispose(); invoker.Dispose(); }
+        if (disposing) { showWait.Unregister(null); tray.Dispose(); menu.Dispose(); daily.Dispose(); showEvent.Dispose(); invoker.Dispose(); }
         base.Dispose(disposing);
     }
 }
