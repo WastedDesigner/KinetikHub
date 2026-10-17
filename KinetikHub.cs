@@ -23,13 +23,13 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.2.0.0")]
+[assembly: AssemblyFileVersion("1.2.0.0")]
 
 static class Program
 {
-    public const string Version = "1.1.0";
-    public static bool Demo, AtStartup;
+    public const string Version = "1.2.0";
+    public static bool Demo, AtStartup, OpenUpdates;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
 
@@ -46,6 +46,43 @@ static class Program
         File.WriteAllText(file, sb.ToString());
     }
 
+    static void UpdatesReport(string file)
+    {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+        Places.Cfg = Settings.Load();
+        var sb = new StringBuilder();
+        foreach (var a in AppDef.WithSelf)
+        {
+            Release latest = null; string err = null;
+            if (a.Repo != null) try { latest = Updates.Latest(a); } catch (Exception ex) { err = ex.Message; }
+            var exe = a == AppDef.Self ? Application.ExecutablePath : Places.Installed(a);
+            sb.AppendLine(a.Title + ": installed v" + (exe != null ? Places.Short(Places.VersionOf(exe)) : "-") + " | latest " + (latest != null ? latest.Tag + (latest.ZipSha != null ? " (verified zip)" : "") : err ?? "none") +
+                " | " + UpdateStatus.Of(a, exe, latest, a.Repo != null, "").Text);
+            if (a.Repo != null && err == null)
+                try { foreach (var r in Updates.List(a, 5)) sb.AppendLine("    " + r.Tag + "  " + r.Published.ToString("yyyy-MM-dd") + "  " + (r.ZipSha != null ? "sha256 ok" : "no digest") + "  notes: " + r.Notes.Length + " chars"); }
+                catch (Exception ex) { sb.AppendLine("    list failed: " + ex.Message); }
+        }
+        File.WriteAllText(file, sb.ToString());
+    }
+
+    static int TestInstall(string id, string tag, string folder)
+    {
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+        var a = id == AppDef.Self.Id ? AppDef.Self : AppDef.Get(id);
+        if (a == null || a.Repo == null) { Console.Error.WriteLine("Unknown app"); return 2; }
+        var r = Updates.List(a, 30).FirstOrDefault(x => x.Tag == tag);
+        if (r == null) { Console.Error.WriteLine("No such release"); return 3; }
+        string temp = null;
+        try
+        {
+            var exe = Updates.Download(a, r, out temp);
+            Deploy.Fresh(a, exe, Path.Combine(Path.GetFullPath(folder), a.Exe));
+            return 0;
+        }
+        catch (Exception ex) { File.WriteAllText(Path.Combine(Path.GetFullPath(folder), "test-install-error.txt"), ex.ToString()); return 1; }
+        finally { Updates.CleanUp(temp); }
+    }
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -57,8 +94,22 @@ static class Program
         int ri = Array.IndexOf(args, "--report");
         if (ri >= 0 && ri + 1 < args.Length) { Report(args[ri + 1]); return 0; }
 
+        // --updates-report file.txt: checks GitHub now and writes each app's update status (and its releases) and quits
+        int ui = Array.IndexOf(args, "--updates-report");
+        if (ui >= 0 && ui + 1 < args.Length) { UpdatesReport(args[ui + 1]); return 0; }
+
+        // --test-install <AppId> <tag> <folder>: downloads that release, verifies it and installs it into folder, for testing
+        int ti = Array.IndexOf(args, "--test-install");
+        if (ti >= 0 && ti + 3 < args.Length) return TestInstall(args[ti + 1], args[ti + 2], args[ti + 3]);
+
+        // Started by a Hub that has just replaced its own exe: wait for that one to close before taking over.
+        int wi = Array.IndexOf(args, "--wait-pid"); int waitPid;
+        if (wi >= 0 && wi + 1 < args.Length && int.TryParse(args[wi + 1], out waitPid))
+            try { using (var old = Process.GetProcessById(waitPid)) old.WaitForExit(20000); } catch { }
+
         Demo = args.Contains("--demo");
         AtStartup = args.Contains("--startup");
+        OpenUpdates = args.Contains("--updates");
         int si = Array.IndexOf(args, "--shot");
         if (si >= 0 && si + 1 < args.Length) { ShotPath = Path.GetFullPath(args[si + 1]); Demo = true; }
         bool created;
@@ -99,7 +150,8 @@ class Settings
     public string Latest = "";      // "id=tag|url|asset" lines from the last update check
     public string LastCheck = "";   // when that was, as a round-trip date
     public string ThemeName = "Midnight";
-    public bool StayInTray = true, CheckUpdates = true;
+    public string Skipped = "";     // "id=tag" lines: releases the user chose to skip
+    public bool StayInTray = true, CheckUpdates = true, AutoInstall;
 
     static IEnumerable<FieldInfo> Fields
     {
@@ -112,9 +164,24 @@ class Settings
 
     public static bool Unreadable;
 
+    // Made-up GitHub results for --demo: one release ahead of each installed app, so the Updates window has something to show.
+    static string DemoReleases()
+    {
+        var lines = new List<string>();
+        if (Places.Cfg == null) Places.Cfg = new Settings(); // Places reads it to find the apps
+        foreach (var a in AppDef.WithSelf.Where(x => x.Repo != null))
+        {
+            var exe = a == AppDef.Self ? Application.ExecutablePath : Places.Installed(a);
+            var v = exe != null ? Places.VersionOf(exe) : new Version(1, 0, 0);
+            var tag = a.Id == "KinetikFocus" ? "" : "v" + v.Major + "." + v.Minor + "." + (Math.Max(0, v.Build) + (a.Id == "KinetikClock" ? 0 : 1));
+            lines.Add(a.Id + "=" + (tag == "" ? "" : tag + "|https://github.com/" + a.Repo + "/releases/tag/" + tag + "|https://github.com/" + a.Repo + "/releases/download/" + tag + "/" + a.Id + ".zip|" + new string('0', 64) + "|"));
+        }
+        return string.Join("\n", lines);
+    }
+
     public static Settings Load()
     {
-        if (Program.Demo) return new Settings { StartWith = "KinetikCalendar|KinetikClock|KinetikNotes" };
+        if (Program.Demo) return new Settings { StartWith = "KinetikCalendar|KinetikClock|KinetikNotes", Latest = DemoReleases(), LastCheck = DateTime.UtcNow.AddMinutes(-3).ToString("o") };
         Settings s = null;
         for (int attempt = 0; attempt < 4; attempt++)
         {
@@ -229,6 +296,10 @@ class AppDef
     };
 
     public static AppDef Get(string id) { return All.FirstOrDefault(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase)); }
+
+    // Hub itself: updated from its own GitHub releases, but not started, stopped or themed like the others.
+    public static readonly AppDef Self = new AppDef { Id = "KinetikHub", Title = "Kinetik Hub", Folder = "Kinetik Hub", Source = "KinetikHub", Repo = "WastedDesigner/KinetikHub", Blurb = "This app" };
+    public static IEnumerable<AppDef> WithSelf { get { return new[] { Self }.Concat(All); } }
 }
 
 // Where things are on disk, worked out from Hub's own place. Each app has one folder, <Apps>\<App folder>\<App>\, holding
@@ -302,6 +373,13 @@ static class Places
             return File.GetLastWriteTimeUtc(exe) > File.GetLastWriteTimeUtc(pf).AddSeconds(2);
         }
         catch { return false; }
+    }
+
+    // Where an app that isn't on this PC is installed from GitHub: its own folder in the same layout, <Apps>\<Folder>\<Source>\.
+    public static string InstallTarget(AppDef a)
+    {
+        var root = AppsRoot;
+        return root == null ? null : Path.Combine(root, a.Folder, a.Source ?? a.Id, a.Exe);
     }
 
     // The working build next to the source, e.g. <Apps>\Kinetik Clock\KinetikClock\KinetikClock.exe
@@ -722,6 +800,47 @@ static class Deploy
         Places.InvalidateFiles();
     }
 
+    // An app that isn't installed yet: its exe (and lib\, if the release has one) into target's folder.
+    public static void Fresh(AppDef a, string newExe, string target)
+    {
+        var dir = Path.GetDirectoryName(target);
+        Directory.CreateDirectory(dir);
+        var files = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase) { { a.Exe, File.ReadAllBytes(newExe) } };
+        var lib = Path.Combine(Path.GetDirectoryName(newExe), "lib");
+        if (Directory.Exists(lib))
+            foreach (var f in Directory.GetFiles(lib, "*.dll", SearchOption.AllDirectories)) files["lib/" + f.Substring(lib.Length + 1).Replace('\\', '/')] = File.ReadAllBytes(f);
+        foreach (var name in new[] { "README.md", "LICENSE" })
+        {
+            var extra = Path.Combine(Path.GetDirectoryName(newExe), name);
+            if (File.Exists(extra) && !File.Exists(Path.Combine(dir, name))) files[name] = File.ReadAllBytes(extra);
+        }
+        var backup = Path.Combine(Places.OldVersionsDir(target), "install-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N"));
+        KinetikSuite.FileTransaction.Install(dir, files, backup);
+        // nothing was replaced, so the recovery folder holds only its status note
+        try { if (Directory.GetFiles(backup, "*", SearchOption.AllDirectories).All(f => Path.GetFileName(f) == "transaction-status.txt")) Directory.Delete(backup, true); } catch { }
+        Places.InvalidateFiles();
+    }
+
+    // Downloads a release, checks it, and installs it: over the installed copy (kept in Old Versions, the app restarted if
+    // it was running) or, for an app that isn't on this PC, into its own folder. Runs off the UI thread. Null when it worked.
+    public static string FromRelease(AppDef a, Release r)
+    {
+        string temp = null, exe;
+        try { exe = Updates.Download(a, r, out temp); }
+        catch (Exception ex) { Updates.CleanUp(temp); return "Couldn't download " + a.Title + " " + r.Tag + ": " + ex.Message; }
+        try
+        {
+            var installed = Places.Installed(a);
+            if (installed != null) return Install(a, installed, exe, r.Tag);
+            var target = Places.InstallTarget(a);
+            if (target == null) return "Couldn't work out where to install " + a.Title + ".";
+            Fresh(a, exe, target);
+            return null;
+        }
+        catch (Exception ex) { return ex.Message; }
+        finally { Updates.CleanUp(temp); }
+    }
+
     public static string Bar(string build, string label)
     {
         return Elevated.Launch("deploy", build, Places.OldVersionsDir(build), label);
@@ -830,14 +949,28 @@ static class Elevated
 }
 
 // ======================================================================= Updates from GitHub releases
-class Release { public string Tag, Page, Zip, ZipSha, ExeSha; public Version V; }
+class Release { public string Tag, Page, Zip, ZipSha, ExeSha, Notes = ""; public Version V; public DateTime Published; }
 
 static class Updates
 {
     static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
+    // GitHub allows 60 API requests an hour without signing in. A refusal for that (403 or 429) gets a plain explanation,
+    // with the time it resets when GitHub says.
     static string Get(string url)
-    { return KinetikSuite.Http.Text(url, 4 << 20, "KinetikHub/" + Program.Version, CancellationToken.None, 20000, "application/vnd.github+json"); }
+    {
+        try { return KinetikSuite.Http.Text(url, 8 << 20, "KinetikHub/" + Program.Version, CancellationToken.None, 20000, "application/vnd.github+json"); }
+        catch (WebException ex)
+        {
+            int code = 0; string reset = null;
+            try { var r = ex.Response as HttpWebResponse; if (r != null) { code = (int)r.StatusCode; reset = r.Headers["X-RateLimit-Reset"]; } } catch { }
+            if (code == 0 && (ex.Message.Contains("(403)") || ex.Message.Contains("(429)"))) code = 403;
+            if (code != 403 && code != 429) throw;
+            long unix; string until = "";
+            if (long.TryParse(reset, out unix)) until = " until " + new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unix).ToLocalTime().ToString("h:mm tt");
+            throw new IOException("GitHub allows 60 update checks an hour without signing in, and they're used up" + (until == "" ? " for now" : until) + ". Try again then.");
+        }
+    }
 
     public static Version ParseTag(string tag)
     {
@@ -857,12 +990,44 @@ static class Updates
             if (r != null && r.StatusCode == HttpStatusCode.NotFound) return null;
             throw;
         }
-        var root = new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>;
+        return Parse(a, new JavaScriptSerializer().DeserializeObject(json) as Dictionary<string, object>);
+    }
+
+    // The newest releases, newest first, leaving out drafts and pre-releases and any without a version in the tag.
+    public static List<Release> List(AppDef a, int count)
+    {
+        var list = new List<Release>();
+        string json;
+        try { json = Get("https://api.github.com/repos/" + a.Repo + "/releases?per_page=" + count); }
+        catch (WebException ex)
+        {
+            var r = ex.Response as HttpWebResponse;
+            if (r != null && r.StatusCode == HttpStatusCode.NotFound) return list;
+            throw;
+        }
+        var arr = new JavaScriptSerializer { MaxJsonLength = 8 << 20 }.DeserializeObject(json) as object[];
+        if (arr == null) return list;
+        foreach (var o in arr)
+        {
+            var d = o as Dictionary<string, object>;
+            if (d == null || true.Equals(d.ContainsKey("draft") ? d["draft"] : null) || true.Equals(d.ContainsKey("prerelease") ? d["prerelease"] : null)) continue;
+            var rel = Parse(a, d);
+            if (rel != null && rel.V != null) list.Add(rel);
+        }
+        return list.OrderByDescending(r => r.V).ToList();
+    }
+
+    static Release Parse(AppDef a, Dictionary<string, object> root)
+    {
         if (root == null) return null;
         var rel = new Release { Tag = root["tag_name"] as string, Page = root["html_url"] as string };
         rel.V = ParseTag(rel.Tag);
+        object when;
+        DateTime published;
+        if (root.TryGetValue("published_at", out when) && DateTime.TryParse(when as string, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out published)) rel.Published = published;
         object body;
         var notes = root.TryGetValue("body", out body) ? body as string ?? "" : "";
+        rel.Notes = notes.Replace("\r\n", "\n").Trim();
         var hash = System.Text.RegularExpressions.Regex.Match(notes, "SHA-256 of `" + System.Text.RegularExpressions.Regex.Escape(a.Exe) + "`:?\\*?\\*?\\s*`([0-9A-Fa-f]{64})`");
         if (hash.Success) rel.ExeSha = hash.Groups[1].Value.ToUpperInvariant();
         object assets;
@@ -894,14 +1059,18 @@ static class Updates
         return r.V == null ? null : r;
     }
 
-    // Downloads the release's zip and returns the path of the exe inside it (extracted to a temp folder).
-    public static string Download(AppDef a, Release r)
+    // Downloads the release's zip and returns the path of the exe inside it (extracted to a temp folder, which the caller
+    // removes with CleanUp(folder) once it's installed).
+    public static string Download(AppDef a, Release r) { string folder; return Download(a, r, out folder); }
+    public static void CleanUp(string folder) { if (folder != null) try { Directory.Delete(folder, true); } catch { } }
+    public static string Download(AppDef a, Release r, out string folder)
     {
+        folder = null;
         if (r.ZipSha == null && r.ExeSha == null) throw new IOException("This release has no verified digest. Check for updates again, or install a verified release manually.");
         if (r.Zip == null || !r.Zip.StartsWith("https://github.com/" + a.Repo + "/releases/download/", StringComparison.Ordinal)) throw new IOException("The release download URL is unexpected.");
         var bytes = KinetikSuite.Http.Get(r.Zip, 64 << 20, "KinetikHub/" + Program.Version, CancellationToken.None, 60000);
         if (r.ZipSha != null && !string.Equals(KinetikSuite.Hashes.Of(bytes), r.ZipSha, StringComparison.OrdinalIgnoreCase)) throw new IOException("The release archive checksum does not match.");
-        var dir = Path.Combine(Path.GetTempPath(), "KinetikHub", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
+        var dir = Path.Combine(Path.GetTempPath(), "KinetikHub", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir); folder = dir;
         try
         {
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long expanded = 0; int count = 0;
@@ -931,9 +1100,65 @@ static class Updates
             if (Places.VersionOf(exe) != r.V) throw new IOException("The executable version does not match the release tag.");
             return exe;
         }
-        catch { try { Directory.Delete(dir, true); } catch { } throw; }
+        catch { try { Directory.Delete(dir, true); } catch { } folder = null; throw; }
     }
 
+    // Hub replacing its own exe: the running one moves to Old Versions (Windows allows renaming a running exe), the new
+    // one takes its place, and a new Hub starts that waits for this one to close. Null when it worked.
+    public static string ReplaceSelf(string newExe, string tag)
+    {
+        var cur = Application.ExecutablePath;
+        var ov = Places.OldVersionsDir(cur);
+        Directory.CreateDirectory(ov);
+        var kept = Path.Combine(ov, "KinetikHub-" + Program.Version + "-" + DateTime.Now.ToString("yyyy-MM-dd-HHmmss") + ".exe");
+        try { File.Move(cur, kept); }
+        catch (Exception ex) { return "Couldn't move the current Kinetik Hub aside: " + ex.Message; }
+        try { File.Copy(newExe, cur); }
+        catch (Exception ex)
+        {
+            try { if (File.Exists(cur)) File.Delete(cur); File.Move(kept, cur); } catch { }
+            return "Couldn't put Kinetik Hub " + tag + " in place: " + ex.Message;
+        }
+        Places.InvalidateFiles();
+        try { Process.Start(new ProcessStartInfo(cur, "--wait-pid " + Process.GetCurrentProcess().Id) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(cur) }); }
+        catch (Exception ex) { return "Kinetik Hub " + tag + " is in place, but didn't start: " + ex.Message + ". Start it again by hand."; }
+        return null;
+    }
+
+}
+
+// One app's place against GitHub, for the Updates window and the rows.
+class UpdateStatus
+{
+    public string Text;
+    public Color Col;
+    public string Action;  // "Install", "Update", or null
+    public Release Release;
+
+    public static UpdateStatus Of(AppDef a, string exe, Release latest, bool checkedYet, string skippedTag)
+    {
+        var s = new UpdateStatus { Col = UI.Sub, Release = latest };
+        if (a.Repo == null) { s.Text = "Not on GitHub"; return s; }
+        if (latest == null) { s.Text = checkedYet ? "No release on GitHub yet" : "Not checked yet"; return s; }
+        if (exe == null)
+        {
+            s.Text = "Not installed  ·  " + latest.Tag + " on GitHub"; s.Col = UI.Accent;
+            if (latest.Zip != null) s.Action = "Install";
+            return s;
+        }
+        var v = Places.VersionOf(exe);
+        if (v != null && latest.V > v)
+        {
+            bool skipped = skippedTag == latest.Tag;
+            s.Text = (skipped ? "Skipped " : "Update available: ") + latest.Tag + (latest.Published != DateTime.MinValue ? "  ·  " + latest.Published.ToLocalTime().ToString("d MMM") : "");
+            s.Col = skipped ? UI.Sub : UI.Warn;
+            if (latest.Zip != null) s.Action = "Update";
+            return s;
+        }
+        if (v != null && latest.V < v) { s.Text = "Newer than GitHub (" + latest.Tag + "): a local build"; s.Col = UI.Accent; return s; }
+        s.Text = "Up to date"; s.Col = UI.Good;
+        return s;
+    }
 }
 
 // ======================================================================= Settings for every app in one file
@@ -1020,6 +1245,7 @@ class HubContext : ApplicationContext
     readonly System.Windows.Forms.Timer daily = new System.Windows.Forms.Timer { Interval = 60 * 60 * 1000 };
     readonly Control invoker = new Control();
     HubForm form;
+    UpdatesForm updatesForm;
 
     public HubContext()
     {
@@ -1030,7 +1256,7 @@ class HubContext : ApplicationContext
         tray.ContextMenuStrip = menu;
         menu.Opening += (s, e) => BuildMenu();
         tray.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left) ShowHub(); };
-        tray.BalloonTipClicked += (s, e) => ShowHub();
+        tray.BalloonTipClicked += (s, e) => ShowUpdates();
         Backup.BeforeExit = () => tray.Visible = false;
         tray.Visible = true;
 
@@ -1056,6 +1282,7 @@ class HubContext : ApplicationContext
             };
             wait.Start();
         }
+        else if (Program.OpenUpdates) ShowUpdates(); // --updates: straight to the Updates window
         else
         {
             ShowHub();
@@ -1068,7 +1295,8 @@ class HubContext : ApplicationContext
             shot.Tick += (s, e) =>
             {
                 shot.Stop();
-                try { using (var bmp = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height)); bmp.Save(Program.ShotPath, ImageFormat.Png); } } catch { }
+                Form shown = Program.OpenUpdates ? (Form)updatesForm : form;
+                try { using (var bmp = new Bitmap(shown.Width, shown.Height)) { shown.DrawToBitmap(bmp, new Rectangle(0, 0, shown.Width, shown.Height)); bmp.Save(Program.ShotPath, ImageFormat.Png); } } catch { }
                 ExitHub();
             };
             shot.Start();
@@ -1083,7 +1311,21 @@ class HubContext : ApplicationContext
         else { if (form.WindowState == FormWindowState.Minimized) form.WindowState = FormWindowState.Normal; form.Show(); form.Activate(); }
     }
 
-    public void Refresh() { if (form != null && !form.IsDisposed) form.RefreshRows(); }
+    public void Refresh()
+    {
+        if (form != null && !form.IsDisposed) form.RefreshRows();
+        if (updatesForm != null && !updatesForm.IsDisposed) updatesForm.RefreshRows();
+    }
+
+    public void ShowUpdates()
+    {
+        if (updatesForm == null || updatesForm.IsDisposed) { updatesForm = new UpdatesForm(this); updatesForm.Show(); }
+        else { if (updatesForm.WindowState == FormWindowState.Minimized) updatesForm.WindowState = FormWindowState.Normal; updatesForm.Activate(); }
+        DateTime last;
+        if (!DateTime.TryParse(c.LastCheck, null, DateTimeStyles.RoundtripKind, out last) || (DateTime.UtcNow - last).TotalHours >= 1) MaybeCheckUpdates(true);
+    }
+
+    public bool CheckingUpdates { get { return checkingUpdates; } }
 
     // Starts the apps one after another, 1.2 s apart, so they don't all fight for the disk at login.
     public void StartAll(List<AppDef> apps, Action done)
@@ -1125,7 +1367,7 @@ class HubContext : ApplicationContext
         {
             var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             string err = null;
-            foreach (var a in AppDef.All.Where(x => x.Repo != null))
+            foreach (var a in AppDef.WithSelf.Where(x => x.Repo != null))
                 try { found[a.Id] = Updates.Encode(Updates.Latest(a)); }
                 catch (Exception ex) { err = ex.Message; }
             try
@@ -1139,26 +1381,106 @@ class HubContext : ApplicationContext
                     if (found.Count > 0) c.LastCheck = DateTime.UtcNow.ToString("o");
                     c.Save();
                     Refresh();
-                    var ups = AppDef.All.Where(a => UpdateFor(a) != null).Select(a => a.Title).ToList();
-                    if (ups.Count > 0 && (form == null || form.IsDisposed || !form.Visible))
-                        tray.ShowBalloonTip(8000, "Kinetik updates", (ups.Count == 1 ? "A new version of " + ups[0] + " is out." : "New versions are out for " + string.Join(", ", ups) + "."), ToolTipIcon.None);
-                    if (now && err != null && found.Count == 0) MessageBox.Show("Couldn't check for updates: " + err, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    if (now && err != null && found.Count == 0) { MessageBox.Show("Couldn't check for updates: " + err, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+                    // with "Install updates automatically", the apps that don't need an administrator prompt update by themselves
+                    var auto = c.AutoInstall ? AppDef.All.Where(a => !a.Admin && UpdateFor(a) != null && UpdateFor(a).Zip != null).ToList() : new List<AppDef>();
+                    if (auto.Count > 0 && !Jobs.Busy) { InstallUpdates(auto, true); return; }
+                    var ups = AppDef.WithSelf.Where(a => UpdateFor(a) != null).Select(a => a.Title).ToList();
+                    bool quiet = (form != null && !form.IsDisposed && form.Visible) || (updatesForm != null && !updatesForm.IsDisposed && updatesForm.Visible);
+                    if (ups.Count > 0 && !quiet)
+                        tray.ShowBalloonTip(8000, "Kinetik updates", (ups.Count == 1 ? "A new version of " + ups[0] + " is out." : "New versions are out for " + string.Join(", ", ups) + ".") + " Click to see them.", ToolTipIcon.None);
                 }));
             }
             catch { }
         });
     }
 
-    // The release newer than the installed copy, if there is one.
-    public Release UpdateFor(AppDef a)
+    // The latest release found on GitHub (null if none, or not checked yet).
+    public Release LatestFor(AppDef a)
     {
         string s;
-        if (!Settings.Map(c.Latest).TryGetValue(a.Id, out s)) return null;
-        var r = Updates.Decode(s);
-        var exe = Places.Installed(a);
-        if (r == null || exe == null) return null;
+        return Settings.Map(c.Latest).TryGetValue(a.Id, out s) ? Updates.Decode(s) : null;
+    }
+    public bool CheckedFor(AppDef a) { return Settings.Map(c.Latest).ContainsKey(a.Id); }
+    public string ExeOf(AppDef a) { return a == AppDef.Self ? Application.ExecutablePath : Places.Installed(a); }
+    public string SkippedTag(AppDef a) { string s; return Settings.Map(c.Skipped).TryGetValue(a.Id, out s) ? s : ""; }
+
+    public void Skip(AppDef a, string tag)
+    {
+        var m = Settings.Map(c.Skipped);
+        if (string.IsNullOrEmpty(tag)) m.Remove(a.Id); else m[a.Id] = tag;
+        c.Skipped = Settings.Unmap(m); c.Save(); Refresh();
+    }
+
+    // The release newer than the installed copy, if there is one and it hasn't been skipped.
+    public Release UpdateFor(AppDef a)
+    {
+        var r = LatestFor(a);
+        var exe = ExeOf(a);
+        if (r == null || exe == null || SkippedTag(a) == r.Tag) return null;
         var v = Places.VersionOf(exe);
         return v != null && r.V > v ? r : null;
+    }
+
+    public UpdateStatus StatusOf(AppDef a) { return UpdateStatus.Of(a, ExeOf(a), LatestFor(a), CheckedFor(a), SkippedTag(a)); }
+
+    // Installs the given apps' releases one after another (the latest of each, or the chosen one), then reports. Hub
+    // itself goes last, since it restarts. Silent runs (automatic updates) report in a tray balloon instead of a box.
+    public void InstallUpdates(List<AppDef> apps, bool silent, Release chosen = null)
+    {
+        if (Jobs.Busy) { if (!silent) Jobs.ShowError("A suite operation is still running. Try again when it finishes."); return; }
+        var plan = apps.Where(a => a != AppDef.Self).Select(a => Tuple.Create(a, chosen ?? LatestFor(a))).Where(p => p.Item2 != null && p.Item2.Zip != null).ToList();
+        var self = apps.Contains(AppDef.Self) ? chosen ?? LatestFor(AppDef.Self) : null;
+        var done = new List<string>(); var failed = new List<string>();
+        Jobs.Run(() =>
+        {
+            foreach (var p in plan)
+            {
+                Jobs.Progress = "Installing " + p.Item1.Title + " " + p.Item2.Tag + " from GitHub…";
+                var err = Deploy.FromRelease(p.Item1, p.Item2);
+                if (err == null) done.Add(p.Item1.Title + " " + p.Item2.Tag); else failed.Add(err);
+            }
+            return failed.Count == 0 ? null : string.Join("\n\n", failed);
+        }, error =>
+        {
+            Places.InvalidateFiles(); Refresh();
+            if (silent)
+            {
+                if (done.Count > 0) tray.ShowBalloonTip(8000, "Kinetik updates", "Updated " + string.Join(", ", done) + ".", ToolTipIcon.None);
+                if (error != null) tray.ShowBalloonTip(8000, "Kinetik updates", "Some updates didn't install. Open Updates in Kinetik Hub to try again.", ToolTipIcon.Warning);
+            }
+            else
+            {
+                if (error != null) MessageBox.Show((done.Count > 0 ? "Installed " + string.Join(", ", done) + ".\n\n" : "") + error, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                else if (done.Count > 0 && self == null) { if (form != null && !form.IsDisposed) form.Note("Installed " + string.Join(", ", done) + "."); }
+            }
+            if (self != null && self.Zip != null) UpdateSelf(self, silent);
+        });
+    }
+
+    // Hub's own update: downloaded and checked off the UI thread, then swapped in and restarted.
+    public void UpdateSelf(Release r, bool silent)
+    {
+        if (Program.Demo) return;
+        Jobs.Run(() =>
+        {
+            Jobs.Progress = "Downloading Kinetik Hub " + r.Tag + "…";
+            string temp = null;
+            try
+            {
+                var exe = Updates.Download(AppDef.Self, r, out temp);
+                var err = Updates.ReplaceSelf(exe, r.Tag);
+                return err ?? "";
+            }
+            catch (Exception ex) { return "Couldn't update Kinetik Hub: " + ex.Message; }
+            finally { Updates.CleanUp(temp); }
+        }, error =>
+        {
+            if (error == "") { tray.Visible = false; ExitHub(); return; } // the new Hub takes over
+            if (silent) tray.ShowBalloonTip(8000, "Kinetik Hub", error, ToolTipIcon.Warning);
+            else Jobs.ShowError(error);
+            Refresh();
+        });
     }
 
     void BuildMenu()
@@ -1182,7 +1504,9 @@ class HubContext : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());
         Add(menu.Items, "Start all", () => StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null));
         Add(menu.Items, "Restart running apps", () => RestartRunning(AppDef.All, null));
-        Add(menu.Items, "Check for updates", () => MaybeCheckUpdates(true));
+        var pending = AppDef.WithSelf.Where(a => UpdateFor(a) != null && UpdateFor(a).Zip != null).ToList();
+        if (pending.Count > 0) Add(menu.Items, "Install " + pending.Count + (pending.Count == 1 ? " update (" + pending[0].Title + ")" : " updates"), () => InstallUpdates(pending, false));
+        Add(menu.Items, "Updates…", ShowUpdates);
         menu.Items.Add(new ToolStripSeparator());
         var st = new ToolStripMenuItem("Start Kinetik Hub at login") { Checked = Startup.IsOn };
         st.Click += (s, e) => { Startup.Set(!Startup.IsOn); Refresh(); };
@@ -1289,7 +1613,7 @@ class HubForm : Form
         bar.Controls.Add(Btn("Suite settings…", () => { using (var f = new SuiteForm(this)) f.ShowDialog(this); }));
         bar.Controls.Add(Btn("Back up all settings", BackupAll));
         bar.Controls.Add(Btn("Restore all…", RestoreAll));
-        bar.Controls.Add(Btn("Check for updates", () => { Note("Checking GitHub for new versions…"); hub.MaybeCheckUpdates(true); }));
+        bar.Controls.Add(Btn("Updates…", hub.ShowUpdates));
         bar.Controls.Add(Btn("Start all", () => hub.StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null)));
         Controls.Add(bar);
 
@@ -1312,7 +1636,7 @@ class HubForm : Form
         trayBox.SetBounds(I(20), I(586), I(260), I(24)); trayBox.ForeColor = UI.Text;
         trayBox.Checked = c.StayInTray;
         trayBox.CheckedChanged += (s, e) => { c.StayInTray = trayBox.Checked; c.Save(); };
-        updBox.Text = "Check for updates once a day";
+        updBox.Text = "Check GitHub for updates once a day";
         updBox.SetBounds(I(290), I(586), I(280), I(24)); updBox.ForeColor = UI.Text;
         updBox.Checked = c.CheckUpdates;
         updBox.CheckedChanged += (s, e) => { c.CheckUpdates = updBox.Checked; c.Save(); };
@@ -1565,8 +1889,11 @@ class AppRow : Panel
         else if (restart) { news.Text = "New build: restart to use it"; news.ForeColor = UI.Accent; }
         else if (upd != null) { news.Text = "Update: " + upd.Tag; news.ForeColor = UI.Warn; }
         else news.Text = "";
-        deploy.Visible = exe != null && (barNew || newer || restart || (upd != null && upd.Zip != null));
-        deploy.Text = barNew || newer ? "Deploy build" : restart ? "Restart now" : "Update";
+        var latest = owner.Hub.LatestFor(a);
+        bool canInstall = exe == null && latest != null && latest.Zip != null;
+        if (canInstall) { news.Text = latest.Tag + " on GitHub"; news.ForeColor = UI.Accent; }
+        deploy.Visible = canInstall || (exe != null && (barNew || newer || restart || (upd != null && upd.Zip != null)));
+        deploy.Text = canInstall ? "Install" : barNew || newer ? "Deploy build" : restart ? "Restart now" : "Update";
 
         run.Enabled = exe != null;
         run.Text = on ? "Restart" : "Start";
@@ -1622,7 +1949,15 @@ class AppRow : Panel
     {
         var exe = Places.Installed(a);
         var build = Places.Build(a);
-        if (exe == null) return;
+        if (exe == null)
+        {
+            var latest = owner.Hub.LatestFor(a);
+            if (latest == null || latest.Zip == null) return;
+            if (MessageBox.Show("Download " + a.Title + " " + latest.Tag + " from GitHub and install it in\n" + Path.GetDirectoryName(Places.InstallTarget(a)) + "?",
+                    "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            owner.Hub.InstallUpdates(new List<AppDef> { a }, false);
+            return;
+        }
         if (Places.BarPending(a, exe))
         {
             if (MessageBox.Show("Put the new build of Kinetik (built " + File.GetLastWriteTime(exe).ToString("d MMM, h:mm tt") + ") in place?\n\n" +
@@ -1642,22 +1977,7 @@ class AppRow : Panel
         var upd = owner.Hub.UpdateFor(a);
         if (upd == null || upd.Zip == null) return;
         if (MessageBox.Show("Download and install " + a.Title + " " + upd.Tag + " from GitHub?\n\nThe current one is kept in Old Versions.", "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-        deploy.Enabled = false; deploy.Text = "Downloading…";
-        ThreadPool.QueueUserWorkItem(_ =>
-        {
-            string newExe = null, err = null;
-            try { newExe = Updates.Download(a, upd); } catch (Exception ex) { err = ex.Message; }
-            try
-            {
-                BeginInvoke((Action)(() =>
-                {
-                    deploy.Enabled = true;
-                    if (err != null) { MessageBox.Show("Couldn't download the update: " + err, "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Warning); RefreshState(); return; }
-                    Perform(() => Deploy.Install(a, exe, newExe, upd.Tag), a.Title + " is now on " + upd.Tag + ".");
-                }));
-            }
-            catch { }
-        });
+        owner.Hub.InstallUpdates(new List<AppDef> { a }, false);
     }
 
     void Perform(Func<string> work, string ok)
@@ -1683,7 +2003,11 @@ class AppRow : Panel
         if (Settings.Map(C.Paths).ContainsKey(a.Id)) Add("Find it automatically again", true, () => { var m = Settings.Map(C.Paths); m.Remove(a.Id); C.Paths = Settings.Unmap(m); C.Save(); owner.RefreshRows(); });
         moreMenu.Items.Add(new ToolStripSeparator());
         Add("Back up its settings beside it", exe != null, () => { Deploy.ExportSettings(a, exe); MessageBox.Show("Saved " + a.Id + "-settings.reg beside " + Path.GetFileName(exe) + ".", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Information); });
-        if (a.Repo != null) Add("Releases on GitHub", true, () => { try { Process.Start("https://github.com/" + a.Repo + "/releases"); } catch { } });
+        if (a.Repo != null)
+        {
+            Add("Versions and release notes…", true, () => VersionsForm.Open(owner, owner.Hub, a));
+            Add("Releases on GitHub", true, () => { try { Process.Start("https://github.com/" + a.Repo + "/releases"); } catch { } });
+        }
     }
 
     void Add(string text, bool enabled, Action click)
@@ -2383,3 +2707,240 @@ class CommonMenu
     public void AddAll(ToolStripItemCollection items) { AddLook(items); AddEnd(items); }
 }
 #pragma warning restore 0649
+
+// ======================================================================= Updates window
+// Every app (and Hub itself) against its latest GitHub release: install what isn't here, update what's behind, pick
+// another version, or skip one. Each download is checked against the release's SHA-256 before anything is replaced, and
+// the version it replaces is kept in Old Versions.
+class UpdatesForm : Form
+{
+    readonly HubContext hub;
+    readonly Settings c;
+    readonly float k;
+    readonly Panel list = new Panel { AutoScroll = true };
+    readonly List<Tuple<AppDef, Label, Label, FlatBtn, FlatBtn, FlatBtn>> rows = new List<Tuple<AppDef, Label, Label, FlatBtn, FlatBtn, FlatBtn>>();
+    readonly FlatBtn checkNow, updateAll;
+    readonly Label foot = new Label { AutoSize = false };
+    readonly System.Windows.Forms.Timer poll = new System.Windows.Forms.Timer { Interval = 1000 };
+
+    int I(float v) { return (int)Math.Round(v * k); }
+
+    public UpdatesForm(HubContext hub)
+    {
+        this.hub = hub; c = hub.Cfg;
+        k = DeviceDpi / 96f;
+        Text = "Kinetik Hub · Updates";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        BackColor = UI.Page; ForeColor = UI.Text;
+        Font = new Font(Draw.Family, 9.5f);
+        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen;
+
+        var title = new Label { Text = "Updates", Font = new Font(Draw.Family, 16f, FontStyle.Bold), AutoSize = true, Left = I(20), Top = I(16), ForeColor = UI.Text };
+        var sub = new Label
+        {
+            Text = "From each app's releases on GitHub. Every download is checked against its SHA-256 before it's installed, and the version it replaces is kept in Old Versions.",
+            AutoSize = false, Left = I(22), Top = I(50), Width = I(680), Height = I(36), ForeColor = UI.Sub
+        };
+        checkNow = new FlatBtn("Check now"); checkNow.Fit();
+        updateAll = new FlatBtn("Update all") { Primary = true }; updateAll.Fit(); updateAll.Width += I(30);
+        checkNow.Top = updateAll.Top = I(90);
+        checkNow.Left = I(20); updateAll.Left = checkNow.Right + I(8);
+        checkNow.Click += (s, e) => hub.MaybeCheckUpdates(true);
+        updateAll.Click += (s, e) => UpdateAll();
+        Controls.AddRange(new Control[] { title, sub, checkNow, updateAll });
+
+        list.SetBounds(I(16), I(130), I(696), I(10));
+        list.BackColor = UI.Page;
+        int y = 0;
+        foreach (var a in AppDef.WithSelf)
+        {
+            var app = a;
+            var row = new Panel { Left = 0, Top = y, Width = I(676), Height = I(50), BackColor = UI.Card };
+            var name = new Label { Text = a.Title, Font = new Font(Draw.Family, 10f, FontStyle.Bold), ForeColor = UI.Text, BackColor = UI.Card, AutoSize = false, Left = I(14), Top = I(6), Width = I(250), Height = I(20) };
+            var installed = new Label { ForeColor = UI.Sub, BackColor = UI.Card, AutoSize = false, Left = I(14), Top = I(26), Width = I(150), Height = I(18), Font = new Font(Draw.Family, 8.5f) };
+            var status = new Label { BackColor = UI.Card, AutoSize = false, Left = I(160), Top = I(26), Width = I(250), Height = I(18), Font = new Font(Draw.Family, 8.5f, FontStyle.Bold) };
+            var act = new FlatBtn("Update") { Primary = true }; var versions = new FlatBtn("Versions…"); var skip = new FlatBtn("Skip");
+            foreach (var b in new[] { act, versions, skip }) { b.Height = I(28); b.Top = I(11); }
+            act.Width = I(76); versions.Width = I(84); skip.Width = I(60);
+            skip.Left = row.Width - I(12) - skip.Width; versions.Left = skip.Left - I(6) - versions.Width; act.Left = versions.Left - I(6) - act.Width;
+            act.Click += (s, e) => Act(app);
+            versions.Click += (s, e) => VersionsForm.Open(this, hub, app);
+            skip.Click += (s, e) => { var st = hub.StatusOf(app); hub.Skip(app, hub.SkippedTag(app) != "" && st.Release != null && hub.SkippedTag(app) == st.Release.Tag ? "" : st.Release != null ? st.Release.Tag : ""); };
+            row.Controls.AddRange(new Control[] { name, installed, status, act, versions, skip });
+            row.Paint += (s, e) => { e.Graphics.Clear(UI.Page); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias; using (var p = Draw.Round(new RectangleF(0, 0, row.Width - 1, row.Height - 1), I(9))) using (var b = new SolidBrush(UI.Card)) e.Graphics.FillPath(b, p); };
+            list.Controls.Add(row);
+            rows.Add(Tuple.Create(a, installed, status, act, versions, skip));
+            y += row.Height + I(6);
+        }
+        list.Height = Math.Min(y, I(560));
+        Controls.Add(list);
+
+        var daily = new CheckBox { Text = "Check GitHub for updates once a day", Checked = c.CheckUpdates, ForeColor = UI.Text, AutoSize = true, Left = I(20), Top = list.Bottom + I(12) };
+        daily.CheckedChanged += (s, e) => { c.CheckUpdates = daily.Checked; c.Save(); };
+        var auto = new CheckBox { Text = "Install updates automatically (Kinetik's bar and Kinetik Hub still ask first)", Checked = c.AutoInstall, ForeColor = UI.Text, AutoSize = true, Left = I(20), Top = daily.Top + I(26) };
+        auto.CheckedChanged += (s, e) => { c.AutoInstall = auto.Checked; c.Save(); };
+        foot.SetBounds(I(20), auto.Top + I(30), I(690), I(22)); foot.ForeColor = UI.Sub;
+        Controls.AddRange(new Control[] { daily, auto, foot });
+        ClientSize = new Size(I(728), foot.Bottom + I(12));
+
+        poll.Tick += (s, e) => RefreshFoot();
+        poll.Start();
+        RefreshRows();
+    }
+
+    protected override void Dispose(bool disposing) { if (disposing) poll.Dispose(); base.Dispose(disposing); }
+
+    public void RefreshRows()
+    {
+        int pending = 0;
+        foreach (var r in rows)
+        {
+            var a = r.Item1;
+            var exe = hub.ExeOf(a);
+            var st = hub.StatusOf(a);
+            r.Item2.Text = exe == null ? "Not installed" : "Installed v" + Places.Short(Places.VersionOf(exe));
+            r.Item3.Text = st.Text; r.Item3.ForeColor = st.Col;
+            r.Item4.Visible = st.Action != null; r.Item4.Text = st.Action ?? "";
+            r.Item5.Visible = a.Repo != null;
+            bool behind = st.Action == "Update";
+            r.Item6.Visible = behind;
+            r.Item6.Text = behind && hub.SkippedTag(a) == st.Release.Tag ? "Unskip" : "Skip";
+            if (hub.UpdateFor(a) != null && st.Action == "Update") pending++;
+        }
+        updateAll.Text = pending > 0 ? "Update all (" + pending + ")" : "Update all";
+        updateAll.Enabled = pending > 0 && !Jobs.Busy;
+        RefreshFoot();
+    }
+
+    void RefreshFoot()
+    {
+        checkNow.Enabled = !hub.CheckingUpdates && !Jobs.Busy;
+        if (Jobs.Busy) { foot.Text = Jobs.Progress; return; }
+        if (hub.CheckingUpdates) { foot.Text = "Checking GitHub…"; return; }
+        DateTime last;
+        foot.Text = DateTime.TryParse(c.LastCheck, null, DateTimeStyles.RoundtripKind, out last)
+            ? "Last checked " + last.ToLocalTime().ToString("d MMM, h:mm tt") + "  ·  Kinetik Hub " + Program.Version
+            : "Not checked yet  ·  Kinetik Hub " + Program.Version;
+    }
+
+    void Act(AppDef a)
+    {
+        var st = hub.StatusOf(a);
+        if (st.Release == null || st.Action == null) return;
+        string question = st.Action == "Install"
+            ? "Download " + a.Title + " " + st.Release.Tag + " from GitHub and install it in\n" + Path.GetDirectoryName(Places.InstallTarget(a)) + "?"
+            : a == AppDef.Self ? "Update Kinetik Hub to " + st.Release.Tag + "? It restarts, and this version is kept in Old Versions."
+            : "Update " + a.Title + " to " + st.Release.Tag + "?\n\nThe current one is kept in Old Versions" + (Running.Is(a) ? ", and " + a.Title + " restarts" : "") + "." + (a.Admin ? "\n\nIt runs as administrator, so Windows asks first." : "");
+        if (MessageBox.Show(question, "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        hub.InstallUpdates(new List<AppDef> { a }, false, st.Release);
+    }
+
+    void UpdateAll()
+    {
+        var apps = AppDef.WithSelf.Where(a => hub.UpdateFor(a) != null && hub.UpdateFor(a).Zip != null).ToList();
+        if (apps.Count == 0) return;
+        var names = apps.Select(a => a.Title + " " + hub.UpdateFor(a).Tag);
+        if (MessageBox.Show("Install " + string.Join(", ", names) + "?\n\nRunning apps restart, and each replaced version is kept in Old Versions." +
+                (apps.Any(a => a.Admin) ? " Kinetik's bar runs as administrator, so Windows asks for it." : "") + (apps.Contains(AppDef.Self) ? " Kinetik Hub updates last and restarts." : ""),
+                "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        hub.InstallUpdates(apps, false);
+    }
+}
+
+// Every release of one app on GitHub with its notes, to install any of them (a newer one, or an older one to go back).
+class VersionsForm : Form
+{
+    readonly HubContext hub;
+    readonly AppDef a;
+    readonly ListBox list = new ListBox { IntegralHeight = false, BorderStyle = BorderStyle.None };
+    readonly TextBox notes = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None };
+    readonly FlatBtn install, page;
+    readonly Label status = new Label { AutoSize = false };
+    List<Release> releases = new List<Release>();
+
+    public static void Open(IWin32Window owner, HubContext hub, AppDef a)
+    {
+        var f = new VersionsForm(hub, a);
+        f.Show(owner);
+    }
+
+    VersionsForm(HubContext hub, AppDef a)
+    {
+        this.hub = hub; this.a = a;
+        float k = DeviceDpi / 96f;
+        Func<float, int> I = v => (int)Math.Round(v * k);
+        Text = a.Title + " · versions on GitHub";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        BackColor = UI.Page; ForeColor = UI.Text; Font = new Font(Draw.Family, 9.5f);
+        FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterParent;
+        ClientSize = new Size(I(640), I(430));
+
+        list.SetBounds(I(16), I(16), I(200), I(350)); list.BackColor = UI.Card; list.ForeColor = UI.Text;
+        notes.SetBounds(I(228), I(16), I(396), I(350)); notes.BackColor = UI.Card; notes.ForeColor = UI.Text;
+        install = new FlatBtn("Install this version") { Primary = true }; install.Fit();
+        page = new FlatBtn("Open on GitHub"); page.Fit();
+        install.Top = page.Top = I(380);
+        page.Left = ClientSize.Width - I(16) - page.Width; install.Left = page.Left - I(8) - install.Width;
+        status.SetBounds(I(16), I(384), install.Left - I(24), I(22)); status.ForeColor = UI.Sub;
+        Controls.AddRange(new Control[] { list, notes, install, page, status });
+        install.Enabled = false;
+
+        list.SelectedIndexChanged += (s, e) => ShowRelease();
+        install.Click += (s, e) => Install();
+        page.Click += (s, e) => { var r = Selected; try { Process.Start(r != null && !string.IsNullOrEmpty(r.Page) ? r.Page : "https://github.com/" + a.Repo + "/releases"); } catch { } };
+
+        status.Text = "Getting the releases from GitHub…";
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            List<Release> got = null; string err = null;
+            try { got = Updates.List(a, 20); } catch (Exception ex) { err = ex.Message; }
+            try { BeginInvoke((Action)(() => Loaded(got, err))); } catch { }
+        });
+    }
+
+    Release Selected { get { int i = list.SelectedIndex; return i >= 0 && i < releases.Count ? releases[i] : null; } }
+
+    void Loaded(List<Release> got, string err)
+    {
+        if (IsDisposed) return;
+        if (err != null) { status.Text = "Couldn't reach GitHub: " + err; return; }
+        releases = got;
+        var exe = hub.ExeOf(a);
+        var v = exe != null ? Places.VersionOf(exe) : null;
+        foreach (var r in releases)
+            list.Items.Add(r.Tag + (r.Published != DateTime.MinValue ? "   " + r.Published.ToLocalTime().ToString("d MMM yyyy") : "") + (v != null && r.V == v ? "   (installed)" : ""));
+        status.Text = releases.Count == 0 ? "No releases on GitHub yet." : exe == null ? "Not installed on this PC." : "Installed: v" + Places.Short(v);
+        if (releases.Count > 0) list.SelectedIndex = 0;
+    }
+
+    void ShowRelease()
+    {
+        var r = Selected;
+        if (r == null) { notes.Text = ""; install.Enabled = false; return; }
+        notes.Text = (r.Notes == "" ? "(No release notes.)" : r.Notes).Replace("\n", "\r\n");
+        var exe = hub.ExeOf(a);
+        var v = exe != null ? Places.VersionOf(exe) : null;
+        bool verified = r.Zip != null && (r.ZipSha != null || r.ExeSha != null);
+        install.Enabled = verified && !(v != null && r.V == v);
+        install.Text = v == null ? "Install this version" : r.V > v ? "Update to " + r.Tag : r.V < v ? "Go back to " + r.Tag : "Installed";
+        install.Fit(); install.Left = page.Left - (int)(8 * DeviceDpi / 96f) - install.Width;
+        if (!verified) status.Text = "This release has no verified download, so Hub won't install it.";
+    }
+
+    void Install()
+    {
+        var r = Selected;
+        if (r == null) return;
+        var exe = hub.ExeOf(a);
+        var v = exe != null ? Places.VersionOf(exe) : null;
+        string what = v == null ? "Install " + a.Title + " " + r.Tag + "?" : r.V < v
+            ? "Go back to " + a.Title + " " + r.Tag + "? Your current v" + Places.Short(v) + " is kept in Old Versions.\n\nIt will be offered again as an update unless you skip it."
+            : "Update " + a.Title + " to " + r.Tag + "? The current one is kept in Old Versions.";
+        if (a == AppDef.Self) what += "\n\nKinetik Hub restarts.";
+        if (MessageBox.Show(what, "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+        hub.InstallUpdates(new List<AppDef> { a }, false, r);
+        Close();
+    }
+}
