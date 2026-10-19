@@ -284,7 +284,7 @@ class AppDef
 
     public static readonly AppDef[] All =
     {
-        new AppDef { Id = "Kinetik", Title = "Kinetik", Folder = "Kinetik", Source = "kinetik", Repo = "WastedDesigner/Kinetik", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
+        new AppDef { Id = "Kinetik", Title = "Kinetik Stats", Folder = "Kinetik", Source = "kinetik", Repo = "WastedDesigner/Kinetik", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
         new AppDef { Id = "KinetikScreen", Title = "Kinetik Screen", Folder = "Kinetik Screen", Source = "KinetikScreen", Blurb = "Sensor panel companion" },
         new AppDef { Id = "KinetikCalendar", Title = "Kinetik Calendar", Folder = "Kinetik Calendar", Source = "KinetikCalendar", Repo = "WastedDesigner/KinetikCalendar", ThemeField = "ThemeName", Blurb = "Calendar widget" },
         new AppDef { Id = "KinetikClock", Title = "Kinetik Clock", Folder = "Kinetik Clock", Source = "KinetikClock", Repo = "WastedDesigner/KinetikClock", ThemeField = "ThemeName", Blurb = "World clock widget" },
@@ -608,7 +608,7 @@ static class OwnStartup
 
     public static int BarState(out string detail)
     {
-        detail = "Kinetik manages its administrator startup task.";
+        detail = "Kinetik Stats manages its administrator startup task.";
         object service = null, folder = null, task = null, definition = null, actions = null, action = null;
         try
         {
@@ -631,7 +631,7 @@ static class OwnStartup
             actions = definition.GetType().InvokeMember("Actions", BindingFlags.GetProperty, null, definition, null);
             action = actions.GetType().InvokeMember("Item", BindingFlags.GetProperty, null, actions, new object[] { 1 });
             var target = action.GetType().InvokeMember("Path", BindingFlags.GetProperty, null, action, null) as string;
-            if (!enabled) { detail = "Kinetik's startup task is disabled."; return 0; }
+            if (!enabled) { detail = "Kinetik Stats' startup task is disabled."; return 0; }
             if (target == null || !File.Exists(target)) { detail = "The startup task target is missing."; return 0; }
             if (!string.Equals(Path.GetFullPath(target), Path.GetFullPath(Places.BarRunning), StringComparison.OrdinalIgnoreCase)) { detail = "The startup task points to an unexpected location: " + target; return 0; }
             detail = "Starts using the enabled administrator logon task."; return 1;
@@ -640,7 +640,7 @@ static class OwnStartup
         {
             var cause = ex is TargetInvocationException && ex.InnerException != null ? ex.InnerException : ex;
             var com = cause as COMException;
-            if (com != null && (com.ErrorCode == unchecked((int)0x80070002) || com.ErrorCode == unchecked((int)0x8004130F))) { detail = "Kinetik has no startup task."; return 0; }
+            if (com != null && (com.ErrorCode == unchecked((int)0x80070002) || com.ErrorCode == unchecked((int)0x8004130F))) { detail = "Kinetik Stats has no startup task."; return 0; }
             detail = "Startup state could not be read: " + cause.Message; return -1;
         }
         finally { foreach (var item in new[] { action, actions, definition, task, folder, service }) if (item != null && Marshal.IsComObject(item)) Marshal.ReleaseComObject(item); }
@@ -936,7 +936,7 @@ static class Elevated
                     if (File.Exists(pf))
                     {
                         Deploy.Copy(pf, a[1], a[3]);
-                        if (!Places.Same(pf, a[1])) throw new IOException("The installed Kinetik checksum does not match the selected build.");
+                        if (!Places.Same(pf, a[1])) throw new IOException("The installed Kinetik Stats checksum does not match the selected build.");
                     }
                 }
                 catch { if (wasRunning) Running.Start(bar, File.Exists(pf) ? pf : a[1], false); throw; }
@@ -1760,7 +1760,7 @@ class HubForm : Form
         if (Program.Demo || v.Count == 0) return;
         var targets = AppDef.All.Where(a => a.HasLook && !a.Admin && Places.Installed(a) != null).ToList();
         var bar = AppDef.Get("Kinetik"); var barExe = Places.Installed(bar);
-        bool changeBar = barExe != null && (!Running.Is(bar) || MessageBox.Show("Changing Kinetik's widget requires restarting the bar as administrator. Apply it too?", "Kinetik Hub", MessageBoxButtons.YesNo) == DialogResult.Yes);
+        bool changeBar = barExe != null && (!Running.Is(bar) || MessageBox.Show("Changing Kinetik Stats' widget requires restarting it as administrator. Apply it too?", "Kinetik Hub", MessageBoxButtons.YesNo) == DialogResult.Yes);
         Jobs.Run(() => Running.WithStopped(targets, () =>
         {
                 foreach (var a in targets)
@@ -1812,7 +1812,7 @@ class HubForm : Form
             if (ids.Contains("Kinetik") && Running.Is(bar))
             {
                 skip.Add("Kinetik");
-                MessageBox.Show("Kinetik's taskbar bar is running as administrator, so its settings were left out. Exit it, then restore again to include them.", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                MessageBox.Show("Kinetik Stats is running as administrator, so its settings were left out. Exit it, then restore again to include them.", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             if (ids.Contains("KinetikHub")) skip.Add("KinetikHub"); // Hub is running; its own settings are restored from its own Backup menu
             var apps = AppDef.All.Where(a => ids.Contains(a.Id) && !skip.Contains(a.Id)).ToList();
@@ -1993,9 +1993,9 @@ class AppRow : Panel
         }
         if (Places.BarPending(a, exe))
         {
-            if (MessageBox.Show("Put the new build of Kinetik (built " + File.GetLastWriteTime(exe).ToString("d MMM, h:mm tt") + ") in place?\n\n" +
+            if (MessageBox.Show("Put the new build of Kinetik Stats (built " + File.GetLastWriteTime(exe).ToString("d MMM, h:mm tt") + ") in place?\n\n" +
                     "It runs as administrator, so Windows asks first. The current copy in Program Files is kept in Old Versions.", "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
-            Perform(() => Deploy.Bar(exe, "build-" + DateTime.Now.ToString("HHmm")), "Kinetik is running its new build.");
+            Perform(() => Deploy.Bar(exe, "build-" + DateTime.Now.ToString("HHmm")), "Kinetik Stats is running its new build.");
             return;
         }
         if (Places.RestartPending(a, exe)) { HubForm.Restart(owner.Hub, a); RefreshState(); return; }
@@ -2121,7 +2121,7 @@ class SuiteForm : Form
         ClientSize = new Size(I(520), I(470));
 
         Controls.Add(new Label { Text = "Settings for every Kinetik app at once", Font = new Font(Draw.Family, 12.5f, FontStyle.Bold), AutoSize = true, Left = I(18), Top = I(16) });
-        Controls.Add(new Label { Text = "Tick what to change. Apps that are running restart to pick it up; Kinetik's bar asks for administrator.", AutoSize = false, Width = I(484), Height = I(36), Left = I(18), Top = I(44), ForeColor = UI.Sub });
+        Controls.Add(new Label { Text = "Tick what to change. Apps that are running restart to pick it up; Kinetik Stats asks for administrator.", AutoSize = false, Width = I(484), Height = I(36), Left = I(18), Top = I(44), ForeColor = UI.Sub });
 
         int y = I(88);
         theme = CurrentText("ThemeName", "Midnight");
@@ -2829,7 +2829,7 @@ class UpdatesForm : Form
 
         var daily = new CheckBox { Text = "Check GitHub for updates once a day", Checked = c.CheckUpdates, ForeColor = UI.Text, AutoSize = true, Left = I(20), Top = list.Bottom + I(12) };
         daily.CheckedChanged += (s, e) => { c.CheckUpdates = daily.Checked; c.Save(); };
-        var auto = new CheckBox { Text = "Install updates automatically (Kinetik's bar and Kinetik Hub still ask first)", Checked = c.AutoInstall, ForeColor = UI.Text, AutoSize = true, Left = I(20), Top = daily.Top + I(26) };
+        var auto = new CheckBox { Text = "Install updates automatically (Kinetik Stats and Kinetik Hub still ask first)", Checked = c.AutoInstall, ForeColor = UI.Text, AutoSize = true, Left = I(20), Top = daily.Top + I(26) };
         auto.CheckedChanged += (s, e) => { c.AutoInstall = auto.Checked; c.Save(); };
         foot.SetBounds(I(20), auto.Top + I(30), I(690), I(22)); foot.ForeColor = UI.Sub;
         Controls.AddRange(new Control[] { daily, auto, foot });
@@ -2893,7 +2893,7 @@ class UpdatesForm : Form
         if (apps.Count == 0) return;
         var names = apps.Select(a => a.Title + " " + hub.UpdateFor(a).Tag);
         if (MessageBox.Show("Install " + string.Join(", ", names) + "?\n\nRunning apps restart, and each replaced version is kept in Old Versions." +
-                (apps.Any(a => a.Admin) ? " Kinetik's bar runs as administrator, so Windows asks for it." : "") + (apps.Contains(AppDef.Self) ? " Kinetik Hub updates last and restarts." : ""),
+                (apps.Any(a => a.Admin) ? " Kinetik Stats runs as administrator, so Windows asks for it." : "") + (apps.Contains(AppDef.Self) ? " Kinetik Hub updates last and restarts." : ""),
                 "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
         hub.InstallUpdates(apps, false);
     }

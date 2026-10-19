@@ -19,13 +19,13 @@
   - **Update** one app, or **Update all** at once. Running apps restart, and each replaced version is kept in Old Versions.
   - **Versions…** shows every release with its notes, to update to it or go back to an older one.
   - **Skip** a version you don't want; it isn't offered again until a newer one comes out.
-  - **Install updates automatically** (off by default) installs new versions of the companion apps as soon as they're found. Kinetik's bar (administrator prompt) and Hub itself still ask first.
+  - **Install updates automatically** (off by default) installs new versions of the companion apps as soon as they're found. Kinetik Stats (administrator prompt) and Hub itself still ask first.
   - **Hub updates itself**: it puts the new version in place, keeps the old one in Old Versions, and restarts.
   - A build of your own that's newer than GitHub's latest is left alone.
 - **Back up all settings** into one `.reg` file, and restore them all from it. Running apps are stopped first so they can't save over the restored settings.
 - **Theme for all:** pick one theme, and a background opacity, and Hub sets them in every app that has one, restarting the ones that are running.
 - **Suite settings:** one window for the settings every app shares: theme, background opacity, size, font, placement, lock position, click-through and snapping. Tick the ones to change and Hub applies them to all the apps at once.
-- **Kinetik's taskbar bar** runs as administrator, so Hub restarts, updates and deploys it through an administrator prompt. Its own logon task keeps starting it.
+- **Kinetik Stats** runs as administrator, so Hub restarts, updates and deploys it through an administrator prompt. Its own logon task keeps starting it.
 
 ## Where it looks for the apps
 
