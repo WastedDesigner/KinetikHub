@@ -1636,7 +1636,7 @@ class HubForm : Form
         {
             var row = new AppRow(this, a, k) { Left = 0, Top = y, Width = I(708) };
             rows.Add(row); list.Controls.Add(row);
-            y += row.Height + I(8);
+            y += row.Height; // the rows join into one card, as in Kinetik's settings
         }
 
         loginBox.Text = "Start Kinetik Hub at login (it then starts the apps ticked \"At login\")";
@@ -1875,10 +1875,22 @@ class AppRow : Panel
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.Clear(UI.Page);
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var p = Draw.Round(new RectangleF(0, 0, Width - 1, Height - 1), I(10)))
-        using (var b = new SolidBrush(UI.Card)) e.Graphics.FillPath(b, p);
+        var g = e.Graphics;
+        g.Clear(UI.Page);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        // Rows join into one card: only the first row's top corners and the last row's bottom corners are round.
+        var kids = Parent == null ? null : Parent.Controls.OfType<AppRow>().ToList();
+        bool first = kids == null || kids.IndexOf(this) == 0, last = kids == null || kids.IndexOf(this) == kids.Count - 1;
+        var r = new RectangleF(0, 0, Width - 1, last ? Height - 1 : Height);
+        float d = I(10) * 2;
+        using (var p = new GraphicsPath())
+        {
+            if (first) { p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90); } else p.AddLine(r.X, r.Y, r.Right, r.Y);
+            if (last) { p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90); } else p.AddLine(r.Right, r.Bottom, r.X, r.Bottom);
+            p.CloseFigure();
+            using (var b = new SolidBrush(UI.Card)) g.FillPath(b, p);
+        }
+        if (!first) using (var pen = new Pen(KinetikSuite.Look.Current.Border, 1)) g.DrawLine(pen, I(16), 0, Width - I(16), 0);
     }
 
     Settings C { get { return owner.Hub.Cfg; } }
@@ -2148,7 +2160,7 @@ class SuiteForm : Form
     }
 
     static bool HasFont(string name) { try { using (var f = new FontFamily(name)) return f.Name == name; } catch { return false; } }
-    static string ThemeText(string t) { return t == "Auto" ? "Match Windows" : t; }
+    static string ThemeText(string t) { return t == "Auto" ? "Match Windows" : t == "App" ? "Match app theme" : t; }
 
     CheckBox Row(string label, string key, Control input, ref int y, Func<object> value)
     {
@@ -2244,6 +2256,8 @@ class Theme
         new Theme("Ocean", C(12, 29, 45), C(228, 242, 250), C(128, 160, 186), C(56, 198, 232), false),
         new Theme("Sunset", C(40, 23, 35), C(250, 236, 240), C(192, 150, 172), C(255, 138, 92), false),
         new Theme("Mono", C(10, 10, 10), C(245, 245, 245), C(140, 140, 140), C(245, 245, 245), false),
+        new Theme("OLED black", C(0, 0, 0), C(242, 242, 245), C(136, 136, 146), C(76, 194, 255), false),
+        new Theme("Mocha", C(30, 30, 46), C(205, 214, 244), C(147, 153, 178), C(203, 166, 247), false),
         new Theme("Terminal", C(3, 10, 5), C(90, 255, 120), C(46, 170, 80), C(205, 255, 215), false),
         new Theme("Amber terminal", C(12, 7, 0), C(255, 182, 40), C(185, 118, 22), C(255, 232, 180), false),
         new Theme("Yellow terminal", C(0, 0, 0), C(255, 226, 0), C(200, 178, 0), C(255, 255, 190), false),
@@ -2254,6 +2268,8 @@ class Theme
 
     public static Theme Get(string name)
     {
+        // "App" follows the theme and accent colour every Kinetik app shares.
+        if (name == "App") { var l = KinetikSuite.Look.Current; return new Theme("App", l.Card, l.Text, l.Sub, l.Accent, l.Light); }
         if (name == "Auto")
         {
             bool light = false;
@@ -2451,7 +2467,7 @@ class ThemePicker : Form
         BackColor = Page;
         float k = DeviceDpi / 96f;
         var flow = new FlowLayoutPanel { Left = (int)(16 * k), Top = (int)(16 * k), Width = (int)(3 * 118 * k), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MaximumSize = new Size((int)(3 * 118 * k), 0), WrapContents = true, BackColor = Page };
-        foreach (var name in new[] { "Auto" }.Concat(Theme.All.Select(t => t.Name)))
+        foreach (var name in new[] { "Auto", "App" }.Concat(Theme.All.Select(t => t.Name)))
         {
             var tile = new ThemeTile(name, name == current, k);
             tile.Click += (s, e) =>
@@ -2519,7 +2535,7 @@ class ThemeTile : Control
         }
         else Mini(g, inner, Theme.Get(ThemeName));
         using (var f = new Font(Draw.Family, 9f))
-            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName, f, new Rectangle(0, Height - I(26), Width, I(20)), selected ? ThemePicker.TextCol : ThemePicker.SubCol,
+            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName == "App" ? "Match app theme" : ThemeName, f, new Rectangle(0, Height - I(26), Width, I(20)), selected ? ThemePicker.TextCol : ThemePicker.SubCol,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
