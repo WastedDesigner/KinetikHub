@@ -164,6 +164,18 @@ class Settings
 
     public static bool Unreadable;
 
+    // Kinetik 3.2 and earlier were the app id "Kinetik"; since 3.3 it's Kinetik Stats, id "KinetikStats". Choices saved
+    // under the old id (start at login, a located copy, moved startup entries, update notes) follow it.
+    void RenameKinetik()
+    {
+        var old = new System.Text.RegularExpressions.Regex(@"(?m)(^|\|)Kinetik(?=[=|\r]|$)");
+        StartWith = old.Replace(StartWith ?? "", "$1KinetikStats");
+        Paths = old.Replace(Paths ?? "", "$1KinetikStats");
+        Moved = old.Replace(Moved ?? "", "$1KinetikStats");
+        Latest = old.Replace(Latest ?? "", "$1KinetikStats");
+        Skipped = old.Replace(Skipped ?? "", "$1KinetikStats");
+    }
+
     // Made-up GitHub results for --demo: one release ahead of each installed app, so the Updates window has something to show.
     static string DemoReleases()
     {
@@ -188,7 +200,7 @@ class Settings
             if (attempt > 0) Thread.Sleep(500);
             bool ok;
             s = TryLoad(out ok);
-            if (ok) { Unreadable = false; return s; }
+            if (ok) { Unreadable = false; s.RenameKinetik(); return s; }
         }
         Unreadable = true;
         MessageBox.Show("Kinetik Hub couldn't read its saved settings, so it's running on the defaults for now.\n\n" +
@@ -284,7 +296,7 @@ class AppDef
 
     public static readonly AppDef[] All =
     {
-        new AppDef { Id = "Kinetik", Title = "Kinetik Stats", Folder = "Kinetik", Source = "kinetik", Repo = "WastedDesigner/Kinetik", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
+        new AppDef { Id = "KinetikStats", Title = "Kinetik Stats", Folder = "Kinetik Stats", Source = "KinetikStats", Repo = "WastedDesigner/KinetikStats", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
         new AppDef { Id = "KinetikScreen", Title = "Kinetik Screen", Folder = "Kinetik Screen", Source = "KinetikScreen", Blurb = "Sensor panel companion" },
         new AppDef { Id = "KinetikCalendar", Title = "Kinetik Calendar", Folder = "Kinetik Calendar", Source = "KinetikCalendar", Repo = "WastedDesigner/KinetikCalendar", ThemeField = "ThemeName", Blurb = "Calendar widget" },
         new AppDef { Id = "KinetikClock", Title = "Kinetik Clock", Folder = "Kinetik Clock", Source = "KinetikClock", Repo = "WastedDesigner/KinetikClock", ThemeField = "ThemeName", Blurb = "World clock widget" },
@@ -345,7 +357,7 @@ static class Places
     }
 
     // Kinetik's bar runs from this copy (its logon task starts it as administrator); its build puts itself here.
-    public static string BarRunning { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Kinetik", "Kinetik.exe"); } }
+    public static string BarRunning { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "KinetikStats", "KinetikStats.exe"); } }
 
     // The app runs from its build, but that was rebuilt after it started: a restart picks up the new one.
     public static bool RestartPending(AppDef a, string exe)
@@ -614,7 +626,7 @@ static class OwnStartup
         {
             using (var run = Registry.CurrentUser.OpenSubKey(RunKey))
             {
-                var value = run == null ? null : run.GetValue("Kinetik") as string;
+                var value = run == null ? null : run.GetValue("KinetikStats") as string;
                 if (!string.IsNullOrEmpty(value))
                 {
                     var path = value.Trim().Trim('"');
@@ -625,7 +637,7 @@ static class OwnStartup
             service = Activator.CreateInstance(Type.GetTypeFromProgID("Schedule.Service"));
             service.GetType().InvokeMember("Connect", BindingFlags.InvokeMethod, null, service, new object[0]);
             folder = service.GetType().InvokeMember("GetFolder", BindingFlags.InvokeMethod, null, service, new object[] { "\\" });
-            task = folder.GetType().InvokeMember("GetTask", BindingFlags.InvokeMethod, null, folder, new object[] { "Kinetik" });
+            task = folder.GetType().InvokeMember("GetTask", BindingFlags.InvokeMethod, null, folder, new object[] { "KinetikStats" });
             var enabled = (bool)task.GetType().InvokeMember("Enabled", BindingFlags.GetProperty, null, task, null);
             definition = task.GetType().InvokeMember("Definition", BindingFlags.GetProperty, null, task, null);
             actions = definition.GetType().InvokeMember("Actions", BindingFlags.GetProperty, null, definition, null);
@@ -890,7 +902,7 @@ static class Elevated
     // Jobs: restart <exe> [s:Name=text | d:Name=number]… · deploy <build> <oldVersionsDir> <label> · stop
     public static int Run(string[] a)
     {
-        var bar = AppDef.Get("Kinetik");
+        var bar = AppDef.Get("KinetikStats");
         try
         {
             string job = a.Length > 0 ? a[0] : "";
@@ -1759,7 +1771,7 @@ class HubForm : Form
     {
         if (Program.Demo || v.Count == 0) return;
         var targets = AppDef.All.Where(a => a.HasLook && !a.Admin && Places.Installed(a) != null).ToList();
-        var bar = AppDef.Get("Kinetik"); var barExe = Places.Installed(bar);
+        var bar = AppDef.Get("KinetikStats"); var barExe = Places.Installed(bar);
         bool changeBar = barExe != null && (!Running.Is(bar) || MessageBox.Show("Changing Kinetik Stats' widget requires restarting it as administrator. Apply it too?", "Kinetik Hub", MessageBoxButtons.YesNo) == DialogResult.Yes);
         Jobs.Run(() => Running.WithStopped(targets, () =>
         {
@@ -1808,10 +1820,10 @@ class HubForm : Form
             if (MessageBox.Show("Replace the settings of " + string.Join(", ", names) + " with the ones in this backup?\n\nApps that are running will restart.",
                     "Kinetik Hub", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
             var skip = new List<string>();
-            var bar = AppDef.Get("Kinetik");
-            if (ids.Contains("Kinetik") && Running.Is(bar))
+            var bar = AppDef.Get("KinetikStats");
+            if (ids.Contains("KinetikStats") && Running.Is(bar))
             {
-                skip.Add("Kinetik");
+                skip.Add("KinetikStats");
                 MessageBox.Show("Kinetik Stats is running as administrator, so its settings were left out. Exit it, then restore again to include them.", "Kinetik Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             if (ids.Contains("KinetikHub")) skip.Add("KinetikHub"); // Hub is running; its own settings are restored from its own Backup menu
