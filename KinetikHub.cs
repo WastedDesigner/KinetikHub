@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyFileVersion("2.0.0.0")]
 
 static class Program
 {
-    public const string Version = "1.2.0";
+    public const string Version = "2.0.0";
     public static bool Demo, AtStartup, OpenUpdates;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -164,7 +164,7 @@ class Settings
 
     public static bool Unreadable;
 
-    // Kinetik 3.2 and earlier were the app id "Kinetik"; since 3.3 it's Kinetik Stats, id "KinetikStats". Choices saved
+    // Kinetik 3.2 and earlier were the app id "Kinetik"; since 4.0 it's Kinetik Stats, id "KinetikStats". Choices saved
     // under the old id (start at login, a located copy, moved startup entries, update notes) follow it.
     void RenameKinetik()
     {
@@ -296,7 +296,7 @@ class AppDef
 
     public static readonly AppDef[] All =
     {
-        new AppDef { Id = "KinetikStats", Title = "Kinetik Stats", Folder = "Kinetik Stats", Source = "KinetikStats", Repo = "WastedDesigner/KinetikStats", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
+        new AppDef { Id = "KinetikStats", Title = "Kinetik Stats", Folder = "Kinetik Stats", Source = "KinetikStats", Repo = "WastedDesigner/Kinetik", ThemeField = "WidgetThemeName", Admin = true, Blurb = "Taskbar system monitor" },
         new AppDef { Id = "KinetikScreen", Title = "Kinetik Screen", Folder = "Kinetik Screen", Source = "KinetikScreen", Blurb = "Sensor panel companion" },
         new AppDef { Id = "KinetikCalendar", Title = "Kinetik Calendar", Folder = "Kinetik Calendar", Source = "KinetikCalendar", Repo = "WastedDesigner/KinetikCalendar", ThemeField = "ThemeName", Blurb = "Calendar widget" },
         new AppDef { Id = "KinetikClock", Title = "Kinetik Clock", Folder = "Kinetik Clock", Source = "KinetikClock", Repo = "WastedDesigner/KinetikClock", ThemeField = "ThemeName", Blurb = "World clock widget" },

@@ -9,6 +9,18 @@
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please open an issue.
 
+## What's new in 2.0
+
+Part of the Kinetik apps, with [Kinetik Stats](https://github.com/WastedDesigner/Kinetik) (the taskbar monitor, called just Kinetik until its v4.0), [Kinetik Hub](https://github.com/WastedDesigner/KinetikHub) and the other desktop widgets.
+
+- **App theme… button:** picks the theme and accent colour of every Kinetik app at once; **Widget theme…** (was Theme for all…) still sets the widgets' themes.
+- The app list's rows join into one card, as in Kinetik Stats' settings.
+- Knows Kinetik's new name, **Kinetik Stats** (`KinetikStats.exe`), and carries over your choices for it.
+- **App theme:** one theme and accent colour for every Kinetik app's windows and menus: Match Windows, Graphite, OLED black, Midnight, Nord, Mocha, Forest, Light or Paper, with a Sky, Violet, Mint, Amber, Rose or Coral accent or your Windows accent. Pick it in Settings → General, under **App theme** in the right-click menu, in Kinetik Hub or in Kinetik Stats, and every app follows.
+- **New icon** in the Kinetik apps' "Graphite glass" style.
+
+<img src="screenshots/hub.png" alt="Kinetik Hub" width="600">
+
 ## Features
 
 - **Start at login:** tick "At login" for each app and Hub starts them one after another when you sign in. If an app already starts by itself, Hub can take that over. It keeps the app's own startup shortcut and puts it back if you untick the app.
