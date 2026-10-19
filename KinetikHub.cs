@@ -1540,9 +1540,16 @@ class HubContext : ApplicationContext
 // ======================================================================= The window
 static class UI
 {
-    public static readonly Color Page = ThemePicker.Page, Card = ThemePicker.Card, CardHi = ThemePicker.CardHi, Accent = ThemePicker.Accent;
-    public static readonly Color Text = ThemePicker.TextCol, Sub = ThemePicker.SubCol, Field = Color.FromArgb(40, 47, 66);
-    public static readonly Color Good = Color.FromArgb(108, 201, 124), Warn = Color.FromArgb(255, 170, 60), Off = Color.FromArgb(110, 118, 140);
+    public static Color Page { get { return ThemePicker.Page; } }
+    public static Color Card { get { return ThemePicker.Card; } }
+    public static Color CardHi { get { return ThemePicker.CardHi; } }
+    public static Color Accent { get { return ThemePicker.Accent; } }
+    public static Color Text { get { return ThemePicker.TextCol; } }
+    public static Color Sub { get { return ThemePicker.SubCol; } }
+    public static Color Field { get { return KinetikSuite.Look.Current.Hover; } }
+    public static Color Good { get { return KinetikSuite.Look.Current.Good; } }
+    public static Color Warn { get { return KinetikSuite.Look.Current.Light ? Color.FromArgb(176, 112, 0) : Color.FromArgb(255, 170, 60); } }
+    public static Color Off { get { return KinetikSuite.Look.Current.Sub; } }
 }
 
 // A flat, rounded button in the window's dark style.
@@ -1575,7 +1582,7 @@ class FlatBtn : Control
         if (!Enabled) fill = Draw.Mix(fill, UI.Card, 0.6f);
         using (var p = Draw.Round(r, 6 * DeviceDpi / 96f))
         using (var b = new SolidBrush(fill)) g.FillPath(b, p);
-        TextRenderer.DrawText(g, Text, Font, ClientRectangle, Enabled ? (Primary ? Color.White : UI.Text) : UI.Off, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        TextRenderer.DrawText(g, Text, Font, ClientRectangle, Enabled ? (Primary ? KinetikSuite.Look.Current.OnAccent : UI.Text) : UI.Off, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 }
 
@@ -1594,6 +1601,8 @@ class HubForm : Form
 
     public HubForm(HubContext hub)
     {
+
+        HandleCreated += (s, e) => KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
         this.hub = hub; c = hub.Cfg;
         k = DeviceDpi / 96f;
         Text = "Kinetik Hub";
@@ -1609,15 +1618,17 @@ class HubForm : Form
         Controls.Add(title); Controls.Add(sub);
 
         var bar = new FlowLayoutPanel { Left = I(18), Top = I(78), Width = I(724), Height = I(36), BackColor = UI.Page, WrapContents = false };
-        bar.Controls.Add(Btn("Theme for all…", ThemeAll));
+        bar.Controls.Add(Btn("App theme…", () => ShowLookMenu(bar.Controls[0])));
+        bar.Controls.Add(Btn("Widget theme…", ThemeAll));
         bar.Controls.Add(Btn("Suite settings…", () => { using (var f = new SuiteForm(this)) f.ShowDialog(this); }));
-        bar.Controls.Add(Btn("Back up all settings", BackupAll));
+        bar.Controls.Add(Btn("Back up all", BackupAll));
         bar.Controls.Add(Btn("Restore all…", RestoreAll));
         bar.Controls.Add(Btn("Updates…", hub.ShowUpdates));
         bar.Controls.Add(Btn("Start all", () => hub.StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null)));
         Controls.Add(bar);
 
         list.SetBounds(I(16), I(122), I(728), I(430));
+        KinetikSuite.Look.Current.ScrollBars(list);
         list.BackColor = UI.Page;
         Controls.Add(list);
         int y = 0;
@@ -1703,6 +1714,16 @@ class HubForm : Form
 
     // ---- toolbar
     // A theme (and, ticked by default, a background opacity) for every app at once. Suite settings has the rest.
+    // The theme of every Kinetik app's windows and menus, as a menu under the button.
+    void ShowLookMenu(Control under)
+    {
+        var menu = new ContextMenuStrip { Renderer = KinetikSuite.Look.Current.MenuRenderer() };
+        var before = KinetikSuite.Look.Current;
+        KinetikSuite.Look.FillMenu(menu.Items, () => KinetikSuite.Look.Recolour(this, before));
+        menu.Closed += (s, e) => BeginInvoke((Action)menu.Dispose);
+        menu.Show(under, new Point(0, under.Height + 2));
+    }
+
     void ThemeAll()
     {
         string chosen = c.ThemeName;
@@ -2077,6 +2098,8 @@ class SuiteForm : Form
 
     public SuiteForm(HubForm owner)
     {
+
+        HandleCreated += (s, e) => KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
         this.owner = owner;
         k = owner.DeviceDpi / 96f;
         Text = "Kinetik suite settings";
@@ -2371,7 +2394,9 @@ sealed class ShadowCache : IDisposable
 
 class DarkColors : ProfessionalColorTable
 {
-    static readonly Color Bg = Color.FromArgb(27, 31, 44), Hi = Color.FromArgb(40, 47, 66), Edge = Color.FromArgb(52, 60, 82);
+    static Color Bg { get { return KinetikSuite.Look.Current.Card; } }
+    static Color Hi { get { return KinetikSuite.Look.Current.Hover; } }
+    static Color Edge { get { return KinetikSuite.Look.Current.Border; } }
     public override Color ToolStripDropDownBackground { get { return Bg; } }
     public override Color ImageMarginGradientBegin { get { return Bg; } }
     public override Color ImageMarginGradientMiddle { get { return Bg; } }
@@ -2385,9 +2410,9 @@ class DarkColors : ProfessionalColorTable
     public override Color MenuItemPressedGradientEnd { get { return Hi; } }
     public override Color SeparatorDark { get { return Edge; } }
     public override Color SeparatorLight { get { return Edge; } }
-    public override Color CheckBackground { get { return Color.FromArgb(52, 96, 160); } }
-    public override Color CheckSelectedBackground { get { return Color.FromArgb(62, 110, 180); } }
-    public override Color CheckPressedBackground { get { return Color.FromArgb(62, 110, 180); } }
+    public override Color CheckBackground { get { return KinetikSuite.Look.Current.Hover; } }
+    public override Color CheckSelectedBackground { get { return KinetikSuite.Look.Current.Hover; } }
+    public override Color CheckPressedBackground { get { return KinetikSuite.Look.Current.Hover; } }
 }
 
 class DarkMenu : ToolStripProfessionalRenderer
@@ -2395,12 +2420,12 @@ class DarkMenu : ToolStripProfessionalRenderer
     public DarkMenu() : base(new DarkColors()) { RoundedEdges = false; }
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
-        e.TextColor = e.Item.Enabled ? Color.FromArgb(232, 236, 244) : Color.FromArgb(110, 118, 140);
+        e.TextColor = e.Item.Enabled ? KinetikSuite.Look.Current.Text : KinetikSuite.Look.Current.Sub;
         base.OnRenderItemText(e);
     }
     protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
     {
-        e.ArrowColor = Color.FromArgb(180, 188, 205);
+        e.ArrowColor = KinetikSuite.Look.Current.Sub;
         base.OnRenderArrow(e);
     }
 }
@@ -2408,11 +2433,17 @@ class DarkMenu : ToolStripProfessionalRenderer
 // A grid of theme tiles, the same picker as the other Kinetik apps.
 class ThemePicker : Form
 {
-    public static readonly Color Page = Color.FromArgb(20, 23, 33), Card = Color.FromArgb(27, 31, 44), CardHi = Color.FromArgb(36, 41, 58), Accent = Color.FromArgb(77, 166, 255);
-    public static readonly Color TextCol = Color.FromArgb(232, 236, 244), SubCol = Color.FromArgb(150, 158, 180);
+    public static Color Page { get { return KinetikSuite.Look.Current.Bg; } }
+    public static Color Card { get { return KinetikSuite.Look.Current.Card; } }
+    public static Color CardHi { get { return KinetikSuite.Look.Current.Hover; } }
+    public static Color Accent { get { return KinetikSuite.Look.Current.Accent; } }
+    public static Color TextCol { get { return KinetikSuite.Look.Current.Text; } }
+    public static Color SubCol { get { return KinetikSuite.Look.Current.Sub; } }
 
     public ThemePicker(string current, Action<string> chosen)
     {
+
+        HandleCreated += (s, e) => KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
         Text = Backup.AppTitle + " theme";
         FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false; MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen; TopMost = true; ShowInTaskbar = true;
@@ -2620,6 +2651,7 @@ class CommonMenu
 
     public string Title, Version;
     public Action OpenTheme;                                        // opens the theme picker (or the page with it)
+    public Action LookChanged;                                      // optional: after the App theme changes
     public Func<int> Scale; public Action<int> SetScale;
     public int[] Widths; public Func<int> CardWidth; public Action<int> SetCardWidth; // optional: Narrow, Normal, Wide
     public Func<string> FontName; public Action<string> SetFontName;   // optional; "" = the default font
@@ -2649,7 +2681,8 @@ class CommonMenu
     // Appearance and placement: Theme, Size, Font, Background opacity, Placement.
     public void AddLook(ToolStripItemCollection items)
     {
-        if (OpenTheme != null) items.Add(Item("Theme…", false, OpenTheme));
+        if (OpenTheme != null) items.Add(Item("Widget theme…", false, OpenTheme));
+        items.Add(KinetikSuite.Look.MenuItem(LookChanged)); // the theme of every Kinetik app's windows and menus
 
         var size = new ToolStripMenuItem("Size");
         foreach (var s in Scales) { int v = s; size.DropDownItems.Add(Item(v + "%", Scale() == v, () => SetScale(v))); }
@@ -2727,6 +2760,8 @@ class UpdatesForm : Form
 
     public UpdatesForm(HubContext hub)
     {
+
+        HandleCreated += (s, e) => KinetikSuite.Look.Current.Window(Handle); // title bar in the Kinetik apps' theme
         this.hub = hub; c = hub.Cfg;
         k = DeviceDpi / 96f;
         Text = "Kinetik Hub · Updates";
