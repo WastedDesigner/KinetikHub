@@ -305,6 +305,9 @@ class AppDef
         new AppDef { Id = "KinetikWeather", Title = "Kinetik Weather", Folder = "Kinetik Weather", Source = "KinetikWeather", Repo = "WastedDesigner/KinetikWeather", ThemeField = "ThemeName", Blurb = "Weather widget" },
         new AppDef { Id = "KinetikFocus", Title = "Kinetik Focus", Folder = "Kinetik Focus", Source = "KinetikFocus", Repo = "WastedDesigner/KinetikFocus", ThemeField = "ThemeName", Blurb = "Focus timer" },
         new AppDef { Id = "KinetikDock", Title = "Kinetik Dock", Folder = "Kinetik Dock", Source = "KinetikDock", Repo = "WastedDesigner/KinetikDock", ThemeField = "ThemeName", NoClickThrough = true, Blurb = "Shortcut groups" },
+        // A window app, not a widget, so no shared look settings. It builds into <Apps>\Kinetik Files\dist\, and its
+        // GitHub repo is private with no releases, so Hub doesn't look for updates.
+        new AppDef { Id = "KinetikFiles", Title = "Kinetik Files", Folder = "Kinetik Files", Source = "dist", Blurb = "File manager" },
     };
 
     public static AppDef Get(string id) { return All.FirstOrDefault(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase)); }
