@@ -1925,7 +1925,11 @@ class AppRow : Panel
         name.ForeColor = exe != null ? UI.Text : UI.Off;
         var v = exe != null ? Places.VersionOf(exe) : null;
         string state = exe == null ? "Not installed" : on ? (Running.Elevated(a) ? "Running as administrator" : "Running") : "Not running";
-        where.Text = state + (exe != null ? "  ·  v" + Places.Short(v) + "  ·  " + Path.GetFileName(Path.GetDirectoryName(exe)) : "  ·  " + a.Blurb);
+        // The folder it runs from, except that an app whose build folder isn't named after it (Kinetik Files builds
+        // into "dist") shows its own name there instead.
+        var folder = exe != null ? Path.GetFileName(Path.GetDirectoryName(exe)) : null;
+        if (folder != null && a.Source != a.Id && folder.Equals(a.Source, StringComparison.OrdinalIgnoreCase)) folder = a.Id;
+        where.Text = state + (exe != null ? "  ·  v" + Places.Short(v) + "  ·  " + folder : "  ·  " + a.Blurb);
         if (exe != whereTip) { whereTip = exe; tips.SetToolTip(where, exe ?? ""); tips.SetToolTip(name, exe ?? ""); }
         where.ForeColor = on ? UI.Good : UI.Sub;
 
