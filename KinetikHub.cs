@@ -867,7 +867,7 @@ static class Deploy
         try
         {
             using (var k = Registry.CurrentUser.OpenSubKey(a.Key)) if (k == null) return;
-            Reg.Run("export \"HKCU\\" + a.Key + "\" \"" + Path.Combine(Path.GetDirectoryName(installed), a.Id + "-settings.reg") + "\" /y");
+            KinetikSuite.RegistryFiles.Export(a.Id, Path.Combine(Path.GetDirectoryName(installed), a.Id + "-settings.reg"));
         }
         catch { }
     }
@@ -1186,19 +1186,16 @@ static class SuiteBackup
     // Exports each app's key and joins them into one .reg file. Returns the apps included.
     public static List<string> Save(string file)
     {
-        var tmp = Path.Combine(Path.GetTempPath(), "KinetikHub-export");
-        Directory.CreateDirectory(tmp);
-        var sb = new StringBuilder("Windows Registry Editor Version 5.00\r\n");
+        // Written directly rather than with reg.exe, so multi-line settings (Kinetik Files' groups) import again.
+        var sb = new StringBuilder(KinetikSuite.RegistryFiles.RegHeader + "\r\n");
         var done = new List<string>();
         foreach (var id in Keys)
         {
-            try { using (var k = Registry.CurrentUser.OpenSubKey(@"Software\" + id)) if (k == null) continue; } catch { continue; }
-            var part = Path.Combine(tmp, id + ".reg");
-            if (!Reg.Run("export \"HKCU\\Software\\" + id + "\" \"" + part + "\" /y")) continue;
-            var lines = File.ReadAllLines(part); // reg.exe writes UTF-16 with a BOM, which ReadAllLines detects
-            sb.Append("\r\n").Append(string.Join("\r\n", lines.Skip(1)).Trim('\r', '\n')).Append("\r\n");
+            string section;
+            try { section = KinetikSuite.RegistryFiles.Section(id); } catch { continue; }
+            if (section == null) continue;
+            sb.Append("\r\n").Append(section.TrimEnd('\r', '\n')).Append("\r\n");
             done.Add(id);
-            try { File.Delete(part); } catch { }
         }
         File.WriteAllText(file, sb.ToString(), Encoding.Unicode);
         return done;
@@ -1210,7 +1207,7 @@ static class SuiteBackup
         try
         {
             var ids = new List<string>();
-            foreach (var line in File.ReadAllLines(file))
+            foreach (var line in KinetikSuite.RegistryFiles.Repair(File.ReadAllText(file)).Split(new[] { "\r\n" }, StringSplitOptions.None))
             {
                 var l = line.Trim();
                 if (!l.StartsWith("[")) continue;
@@ -1227,7 +1224,8 @@ static class SuiteBackup
     // Imports the file, leaving out the apps in skip.
     public static bool Restore(string file, ICollection<string> skip)
     {
-        var lines = File.ReadAllLines(file);
+        // Older backups were made with reg.exe, whose multi-line values run over several lines: join those first.
+        var lines = KinetikSuite.RegistryFiles.Repair(File.ReadAllText(file)).Split(new[] { "\r\n" }, StringSplitOptions.None);
         var keep = new StringBuilder("Windows Registry Editor Version 5.00\r\n");
         bool on = true;
         foreach (var line in lines.Skip(1))
@@ -2644,7 +2642,8 @@ static class Backup
 
     public static void SaveNow()
     {
-        if (Reg("export \"HKCU\\Software\\" + KeyName + "\" \"" + FilePath + "\" /y"))
+        bool saved; try { saved = KinetikSuite.RegistryFiles.Export(KeyName, FilePath); } catch { saved = false; }
+        if (saved)
             Say("Settings backed up to\n" + FilePath + "\n\nKeep this file with the app. After reinstalling Windows, " + AppTitle + " offers to restore it the first time it starts.", MessageBoxIcon.Information);
         else
             Say("Couldn't save the backup to\n" + FilePath + "\n\nCheck that the folder isn't read-only.", MessageBoxIcon.Warning);

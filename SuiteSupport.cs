@@ -308,7 +308,91 @@ namespace KinetikSuite
             }
             catch { return false; }
         }
-        static bool ValidId(string id) { return Regex.IsMatch(id, @"^Kinetik(?:Calendar|Clock|Dock|Feeds|Focus|Hub|Notes|Screen|Weather)?$"); }
+        static bool ValidId(string id) { return Regex.IsMatch(id, @"^Kinetik(?:Calendar|Clock|Dock|Feeds|Files|Focus|Hub|Notes|Screen|Stats|Weather)?$"); }
+
+        // ---- Writing .reg files. Not "reg export": settings that hold several lines (Kinetik Files' groups, recent
+        // folders and tabs, and the like) come out of reg.exe with their line breaks written as they are, and a .reg
+        // file can't hold a raw line break inside a quoted value, so such a file won't import. Here any text with a
+        // line break is written as hex(1), the .reg form for text spelled out as UTF-16 bytes, which keeps it exact.
+        public const string RegHeader = "Windows Registry Editor Version 5.00";
+
+        public static bool Export(string id, string file)
+        {
+            var section = Section(id);
+            if (section == null) return false;
+            File.WriteAllText(file, RegHeader + "\r\n\r\n" + section, Encoding.Unicode);
+            return true;
+        }
+
+        // HKCU\Software\<id> and its subkeys as .reg text (no header), or null if the key isn't there.
+        public static string Section(string id)
+        {
+            var sb = new StringBuilder();
+            using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\" + id))
+            {
+                if (key == null) return null;
+                Write(sb, key, @"HKEY_CURRENT_USER\Software\" + id);
+            }
+            return sb.ToString();
+        }
+
+        static void Write(StringBuilder sb, Microsoft.Win32.RegistryKey key, string path)
+        {
+            sb.Append('[').Append(path).Append("]\r\n");
+            foreach (var name in key.GetValueNames())
+            {
+                var kind = key.GetValueKind(name);
+                var v = key.GetValue(name, null, Microsoft.Win32.RegistryValueOptions.DoNotExpandEnvironmentNames);
+                sb.Append(name == "" ? "@" : "\"" + Escape(name) + "\"").Append('=');
+                switch (kind)
+                {
+                    case Microsoft.Win32.RegistryValueKind.DWord: sb.Append("dword:").Append(unchecked((uint)Convert.ToInt32(v)).ToString("x8")); break;
+                    case Microsoft.Win32.RegistryValueKind.QWord: sb.Append("hex(b):").Append(Hex(BitConverter.GetBytes(Convert.ToInt64(v)))); break;
+                    case Microsoft.Win32.RegistryValueKind.Binary: sb.Append("hex:").Append(Hex((byte[])v)); break;
+                    case Microsoft.Win32.RegistryValueKind.ExpandString: sb.Append("hex(2):").Append(Hex(Encoding.Unicode.GetBytes((string)v + "\0"))); break;
+                    case Microsoft.Win32.RegistryValueKind.MultiString: sb.Append("hex(7):").Append(Hex(Encoding.Unicode.GetBytes(string.Join("\0", (string[])v) + "\0\0"))); break;
+                    case Microsoft.Win32.RegistryValueKind.String: sb.Append(Text((string)v)); break;
+                    default: sb.Append("hex(0):").Append(Hex(v as byte[] ?? new byte[0])); break;
+                }
+                sb.Append("\r\n");
+            }
+            sb.Append("\r\n");
+            foreach (var sub in key.GetSubKeyNames())
+                using (var k = key.OpenSubKey(sub)) if (k != null) Write(sb, k, path + "\\" + sub);
+        }
+
+        public static string Text(string s) { return s.IndexOf('\r') >= 0 || s.IndexOf('\n') >= 0 ? "hex(1):" + Hex(Encoding.Unicode.GetBytes(s + "\0")) : "\"" + Escape(s) + "\""; }
+        static string Escape(string s) { return s.Replace("\\", "\\\\").Replace("\"", "\\\""); }
+        static string Hex(byte[] b) { return string.Join(",", b.Select(x => x.ToString("x2"))); }
+
+        // Rewrites .reg text made by reg.exe so it imports: a quoted value whose line breaks were written as they are
+        // (it runs on past the end of its line) is joined back up and written as hex(1). Text that's already fine is
+        // returned as it was.
+        public static string Repair(string text)
+        {
+            var lines = text.Replace("\r\n", "\n").Split('\n');
+            var sb = new StringBuilder();
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var m = Regex.Match(lines[i], "^(@|\"(?:[^\"\\\\]|\\\\.)*\")=\"(.*)$");
+                if (!m.Success || ClosesQuote(m.Groups[2].Value)) { sb.Append(lines[i]).Append(i < lines.Length - 1 ? "\r\n" : ""); continue; }
+                var body = m.Groups[2].Value;
+                int j = i;
+                while (!ClosesQuote(body) && j + 1 < lines.Length) body += "\n" + lines[++j];
+                if (!ClosesQuote(body)) { sb.Append(lines[i]).Append("\r\n"); continue; } // never closes: leave it for reg.exe to reject
+                var value = Regex.Replace(body.Substring(0, body.Length - 1), @"\\(.)", "$1", RegexOptions.Singleline);
+                sb.Append(m.Groups[1].Value).Append('=').Append(Text(value)).Append(j < lines.Length - 1 ? "\r\n" : "");
+                i = j;
+            }
+            return sb.ToString();
+        }
+        // Whether a quoted value's text ends with its closing quote (one not escaped by a backslash).
+        static bool ClosesQuote(string s)
+        {
+            if (!s.EndsWith("\"")) return false;
+            int slashes = 0; for (int k = s.Length - 2; k >= 0 && s[k] == '\\'; k--) slashes++;
+            return slashes % 2 == 0;
+        }
         public static bool Replace(string file, IEnumerable<string> ids)
         {
             var keys = ids.Distinct().ToArray();
@@ -318,6 +402,9 @@ namespace KinetikSuite
             var text = Encoding.Unicode.GetString(bytes);
             using (var reader = new StreamReader(new MemoryStream(bytes), true)) text = reader.ReadToEnd();
             if (!text.StartsWith("Windows Registry Editor Version 5.00", StringComparison.Ordinal)) return false;
+            // Backups made with reg.exe may hold multi-line values that won't import as they are: fix those first.
+            var repaired = Repair(text);
+            if (repaired != text) { text = repaired; bytes = Encoding.Unicode.GetPreamble().Concat(Encoding.Unicode.GetBytes(text)).ToArray(); }
             foreach (var line in text.Split('\n'))
             {
                 var l = line.Trim(); if (!l.StartsWith("[")) continue;
@@ -330,7 +417,7 @@ namespace KinetikSuite
             foreach (var id in keys)
             {
                 using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\" + id)) if (key == null) continue;
-                if (!Run("export \"HKCU\\Software\\" + id + "\" \"" + Path.Combine(recovery, id + ".reg") + "\" /y")) throw new IOException("Could not back up existing settings; nothing was replaced.");
+                if (!Export(id, Path.Combine(recovery, id + ".reg"))) throw new IOException("Could not back up existing settings; nothing was replaced.");
                 existed.Add(id);
             }
             try
@@ -364,7 +451,8 @@ namespace KinetikSuite
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Kinetik", "Recovery");
             Directory.CreateDirectory(directory);
             var file = Path.Combine(directory, id + "-invalid-" + Guid.NewGuid().ToString("N") + ".reg");
-            if (!Run("export \"HKCU\\Software\\" + id + "\" \"" + file + "\" /y"))
+            bool saved; try { saved = Export(id, file); } catch { saved = false; }
+            if (!saved)
             {
                 var settings = assembly.GetType("Settings"); var guard = settings == null ? null : settings.GetField("Unreadable");
                 if (guard != null) guard.SetValue(null, true);
