@@ -308,7 +308,7 @@ namespace KinetikSuite
             }
             catch { return false; }
         }
-        static bool ValidId(string id) { return Regex.IsMatch(id, @"^Kinetik(?:Calendar|Clock|Dock|Feeds|Files|Focus|Hub|Notes|Screen|Stats|Weather)?$"); }
+        static bool ValidId(string id) { return Regex.IsMatch(id, @"^Kinetik(?:Calendar|Clock|Feeds|Files|Hub|Notes|Screen|Stats|Weather)?$"); }
 
         // ---- Writing .reg files. Not "reg export": settings that hold several lines (Kinetik Files' groups, recent
         // folders and tabs, and the like) come out of reg.exe with their line breaks written as they are, and a .reg
@@ -477,7 +477,7 @@ namespace KinetikSuite
             // No integrity label ("S:(ML…)"): setting one needs a privilege apps don't hold, and the event gets this process's level anyway.
             security.SetSecurityDescriptorSddlForm("D:(A;;0x1F0003;;;SY)(A;;0x1F0003;;;BA)(A;;0x1F0003;;;" + System.Security.Principal.WindowsIdentity.GetCurrent().User.Value + ")");
             bool created;
-            signal = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\" + id + ".Shutdown", out created, security);
+            signal = EventWaitHandleAcl.Create(false, EventResetMode.AutoReset, @"Local\" + id + ".Shutdown", out created, security);
             // A registered wait sleeps until requested instead of waking every widget four times a second.
             dispatcher = new System.Windows.Forms.Control();
             dispatcher.CreateControl();
@@ -518,7 +518,18 @@ namespace KinetikSuite
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
         public static T Attach<T>(T menu) where T : System.Windows.Forms.ToolStripDropDown
         {
-            menu.Opened += (s, e) => { try { SetForegroundWindow(menu.Handle); } catch { } };
+            menu.Opening += (s, e) =>
+            {
+                float k = menu.DeviceDpi / 96f;
+                menu.Padding = new System.Windows.Forms.Padding((int)(4 * k));
+                foreach (System.Windows.Forms.ToolStripItem i in menu.Items)
+                    if (i is System.Windows.Forms.ToolStripMenuItem) i.Padding = new System.Windows.Forms.Padding((int)(6 * k), (int)(4 * k), (int)(6 * k), (int)(4 * k));
+            };
+            menu.Opened += (s, e) =>
+            {
+                try { SetForegroundWindow(menu.Handle); } catch { }
+                try { using (var p = Paths.Round(new System.Drawing.RectangleF(0, 0, menu.Width, menu.Height), menu.DeviceDpi / 96f * 8)) menu.Region = new System.Drawing.Region(p); } catch { }
+            };
             return menu;
         }
     }
@@ -534,7 +545,7 @@ namespace KinetikSuite
 
         public const string Key = @"Software\Kinetik Suite";
         public const string Auto = "Match Windows", WindowsAccent = "Windows accent";
-        public static readonly string[] Themes = { Auto, "Graphite", "OLED black", "Midnight", "Nord", "Mocha", "Forest", "Light", "Paper" };
+        public static readonly string[] Themes = { Auto, "Dark", "Light" };
         public static readonly string[] Accents = { "Sky", "Violet", "Mint", "Amber", "Rose", "Coral", WindowsAccent };
 
         static System.Drawing.Color C(int r, int g, int b) { return System.Drawing.Color.FromArgb(r, g, b); }
@@ -542,14 +553,8 @@ namespace KinetikSuite
         // name → page, sidebar, card, hover, field, border, text, secondary text
         static readonly Dictionary<string, System.Drawing.Color[]> palettes = new Dictionary<string, System.Drawing.Color[]>
         {
-            { "Graphite", new[] { C(17, 17, 19), C(17, 17, 19), C(26, 26, 29), C(34, 34, 38), C(31, 31, 35), C(44, 44, 50), C(236, 236, 240), C(142, 142, 152) } },
-            { "OLED black", new[] { C(0, 0, 0), C(0, 0, 0), C(14, 14, 16), C(24, 24, 27), C(20, 20, 23), C(36, 36, 40), C(242, 242, 245), C(136, 136, 146) } },
-            { "Midnight", new[] { C(13, 18, 32), C(13, 18, 32), C(21, 28, 46), C(28, 37, 59), C(25, 33, 53), C(39, 50, 76), C(230, 235, 245), C(135, 146, 171) } },
-            { "Nord", new[] { C(46, 52, 64), C(46, 52, 64), C(54, 61, 75), C(61, 69, 85), C(58, 65, 80), C(70, 79, 97), C(236, 239, 244), C(163, 171, 186) } },
-            { "Mocha", new[] { C(30, 30, 46), C(30, 30, 46), C(39, 39, 57), C(49, 50, 69), C(45, 46, 64), C(60, 61, 82), C(205, 214, 244), C(147, 153, 178) } },
-            { "Forest", new[] { C(16, 24, 20), C(16, 24, 20), C(24, 34, 29), C(31, 44, 37), C(28, 39, 33), C(42, 58, 49), C(228, 240, 231), C(138, 163, 147) } },
+            { "Dark", new[] { C(17, 17, 19), C(17, 17, 19), C(26, 26, 29), C(34, 34, 38), C(31, 31, 35), C(44, 44, 50), C(236, 236, 240), C(142, 142, 152) } },
             { "Light", new[] { C(246, 246, 248), C(246, 246, 248), C(255, 255, 255), C(240, 240, 244), C(255, 255, 255), C(222, 222, 229), C(27, 27, 31), C(104, 104, 116) } },
-            { "Paper", new[] { C(247, 244, 238), C(247, 244, 238), C(253, 251, 247), C(242, 237, 228), C(255, 255, 255), C(226, 219, 206), C(46, 38, 30), C(120, 106, 90) } },
         };
 
         // name → colour on dark themes, colour on light themes
@@ -615,10 +620,10 @@ namespace KinetikSuite
 
         public static Look Make(string theme, string accent)
         {
-            var name = theme == Auto ? (WindowsIsLight() ? "Light" : "Graphite") : theme;
+            var name = theme == Auto ? (WindowsIsLight() ? "Light" : "Dark") : theme;
             System.Drawing.Color[] p;
-            if (!palettes.TryGetValue(name ?? "", out p)) { name = "Graphite"; p = palettes[name]; }
-            var l = new Look { Name = theme == Auto ? Auto : name, Light = name == "Light" || name == "Paper" };
+            if (!palettes.TryGetValue(name ?? "", out p)) { name = "Dark"; p = palettes[name]; }
+            var l = new Look { Name = theme == Auto ? Auto : name, Light = name == "Light" };
             l.Bg = p[0]; l.Nav = p[1]; l.Card = p[2]; l.Hover = p[3]; l.Field = p[4]; l.Border = p[5]; l.Text = p[6]; l.Sub = p[7];
             l.Accent = AccentColour(accent, l.Light);
             l.OnAccent = Luma(l.Accent) > 0.55 ? C(17, 17, 19) : C(255, 255, 255);
@@ -750,6 +755,27 @@ namespace KinetikSuite
     {
         static Look look { get { return Look.Current; } }
         public LookMenu() : base(new LookColours()) { RoundedEdges = false; }
+        protected override void OnRenderToolStripBackground(System.Windows.Forms.ToolStripRenderEventArgs e) { e.Graphics.Clear(look.Card); }
+        protected override void OnRenderImageMargin(System.Windows.Forms.ToolStripRenderEventArgs e) { }
+        // A hairline around the menu, rounded to match the window's rounded corners.
+        protected override void OnRenderToolStripBorder(System.Windows.Forms.ToolStripRenderEventArgs e)
+        {
+            var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            var r = new System.Drawing.RectangleF(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
+            Paths.Stroke(g, r, e.ToolStrip.Region != null ? e.ToolStrip.DeviceDpi / 96f * 8 : 0.5f, look.Border);
+        }
+        // The item under the mouse gets a soft accent-tinted pill instead of a flat full-width bar.
+        protected override void OnRenderMenuItemBackground(System.Windows.Forms.ToolStripItemRenderEventArgs e)
+        {
+            var it = e.Item; if (!it.Enabled || !(it.Selected || it.Pressed)) return;
+            var g = e.Graphics; g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            Paths.Fill(g, new System.Drawing.RectangleF(3, 1, it.Width - 6, it.Height - 2), 6, System.Drawing.Color.FromArgb(46, look.Accent));
+        }
+        protected override void OnRenderSeparator(System.Windows.Forms.ToolStripSeparatorRenderEventArgs e)
+        {
+            int y = e.Item.Height / 2;
+            using (var p = new System.Drawing.Pen(look.Border)) e.Graphics.DrawLine(p, 12, y, e.Item.Width - 12, y);
+        }
         protected override void OnRenderItemText(System.Windows.Forms.ToolStripItemTextRenderEventArgs e)
         {
             e.TextColor = e.Item.Enabled ? look.Text : look.Sub;

@@ -8,3 +8,6 @@ dist/
 release-manifest.json
 # Settings backups hold personal settings: never commit any .reg file
 *.reg
+
+bin/
+obj/

@@ -120,7 +120,7 @@ static class Program
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            ToolStripManager.Renderer = new DarkMenu();
+            ToolStripManager.Renderer = KinetikSuite.Look.Current.MenuRenderer();
             Backup.KeyName = "KinetikHub"; Backup.AppTitle = "Kinetik Hub";
             Startup.Args = " --startup";
             if (!Demo) Backup.OfferRestore();
@@ -151,7 +151,7 @@ class Settings
     public string LastCheck = "";   // when that was, as a round-trip date
     public string ThemeName = "Midnight";
     public string Skipped = "";     // "id=tag" lines: releases the user chose to skip
-    public bool StayInTray = true, CheckUpdates = true, AutoInstall;
+    public bool StayInTray = true, CheckUpdates = true, AutoInstall, ListView;
 
     static IEnumerable<FieldInfo> Fields
     {
@@ -185,7 +185,7 @@ class Settings
         {
             var exe = a == AppDef.Self ? Application.ExecutablePath : Places.Installed(a);
             var v = exe != null ? Places.VersionOf(exe) : new Version(1, 0, 0);
-            var tag = a.Id == "KinetikFocus" ? "" : "v" + v.Major + "." + v.Minor + "." + (Math.Max(0, v.Build) + (a.Id == "KinetikClock" ? 0 : 1));
+            var tag = "v" + v.Major + "." + v.Minor + "." + (Math.Max(0, v.Build) + (a.Id == "KinetikClock" ? 0 : 1));
             lines.Add(a.Id + "=" + (tag == "" ? "" : tag + "|https://github.com/" + a.Repo + "/releases/tag/" + tag + "|https://github.com/" + a.Repo + "/releases/download/" + tag + "/" + a.Id + ".zip|" + new string('0', 64) + "|"));
         }
         return string.Join("\n", lines);
@@ -193,7 +193,7 @@ class Settings
 
     public static Settings Load()
     {
-        if (Program.Demo) return new Settings { StartWith = "KinetikCalendar|KinetikClock|KinetikNotes", Latest = DemoReleases(), LastCheck = DateTime.UtcNow.AddMinutes(-3).ToString("o") };
+        if (Program.Demo) return new Settings { ListView = Environment.GetCommandLineArgs().Contains("--list"), StartWith = "KinetikCalendar|KinetikClock|KinetikNotes", Latest = DemoReleases(), LastCheck = DateTime.UtcNow.AddMinutes(-3).ToString("o") };
         Settings s = null;
         for (int attempt = 0; attempt < 4; attempt++)
         {
@@ -303,8 +303,6 @@ class AppDef
         new AppDef { Id = "KinetikFeeds", Title = "Kinetik Feeds", Folder = "Kinetik Feeds", Source = "KinetikFeeds", Repo = "WastedDesigner/KinetikFeeds", ThemeField = "ThemeName", Blurb = "News headlines widget" },
         new AppDef { Id = "KinetikNotes", Title = "Kinetik Notes", Folder = "Kinetik Notes", Source = "KinetikNotes", Repo = "WastedDesigner/KinetikNotes", ThemeField = "ThemeName", NoClickThrough = true, Blurb = "Markdown sticky notes" },
         new AppDef { Id = "KinetikWeather", Title = "Kinetik Weather", Folder = "Kinetik Weather", Source = "KinetikWeather", Repo = "WastedDesigner/KinetikWeather", ThemeField = "ThemeName", Blurb = "Weather widget" },
-        new AppDef { Id = "KinetikFocus", Title = "Kinetik Focus", Folder = "Kinetik Focus", Source = "KinetikFocus", Repo = "WastedDesigner/KinetikFocus", ThemeField = "ThemeName", Blurb = "Focus timer" },
-        new AppDef { Id = "KinetikDock", Title = "Kinetik Dock", Folder = "Kinetik Dock", Source = "KinetikDock", Repo = "WastedDesigner/KinetikDock", ThemeField = "ThemeName", NoClickThrough = true, Blurb = "Shortcut groups" },
         // A window app, not a widget, so no shared look settings. It builds into <Apps>\Kinetik Files\dist\, and its
         // GitHub repo is private with no releases, so Hub doesn't look for updates.
         new AppDef { Id = "KinetikFiles", Title = "Kinetik Files", Folder = "Kinetik Files", Source = "dist", Blurb = "File manager" },
@@ -1593,7 +1591,7 @@ class FlatBtn : Control
         Color fill = Primary ? (down ? Draw.Mix(UI.Accent, Color.Black, 0.2f) : hot ? Draw.Mix(UI.Accent, Color.White, 0.12f) : UI.Accent)
                              : (down ? UI.Field : hot ? Draw.Mix(UI.Field, Color.White, 0.08f) : Draw.Mix(UI.Field, UI.Card, 0.3f));
         if (!Enabled) fill = Draw.Mix(fill, UI.Card, 0.6f);
-        using (var p = Draw.Round(r, 6 * DeviceDpi / 96f))
+        using (var p = Draw.Round(r, 8 * DeviceDpi / 96f))
         using (var b = new SolidBrush(fill)) g.FillPath(b, p);
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, Enabled ? (Primary ? KinetikSuite.Look.Current.OnAccent : UI.Text) : UI.Off, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
@@ -1624,52 +1622,75 @@ class HubForm : Form
         Font = new Font(Draw.Family, 9.5f);
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(I(760), I(640));
+        ClientSize = new Size(I(820), I(704));
 
-        var title = new Label { Text = "Kinetik Hub", Font = new Font(Draw.Family, 16f, FontStyle.Bold), AutoSize = true, Left = I(20), Top = I(16), ForeColor = UI.Text };
-        var sub = new Label { Text = "Your Kinetik apps: start them at login, deploy new builds and updates, back up and theme them all at once.", AutoSize = true, Left = I(22), Top = I(50), ForeColor = UI.Sub };
-        Controls.Add(title); Controls.Add(sub);
+        // header: the Hub icon on a rounded tile, big title, and the two main actions on the right
+        var logo = new PictureBox { Left = I(24), Top = I(22), Width = I(48), Height = I(48), SizeMode = PictureBoxSizeMode.Zoom, BackColor = UI.Page };
+        try { using (var big = new Icon(Icon, new Size(48, 48))) logo.Image = big.ToBitmap(); } catch { }
+        var title = new Label { Text = "Kinetik Hub", Font = new Font(Draw.Family, 20f, FontStyle.Bold), AutoSize = true, Left = I(82), Top = I(16), ForeColor = UI.Text };
+        var sub = new Label { Text = "Launch, update and theme your Kinetik apps.", AutoSize = true, Left = I(85), Top = I(56), ForeColor = UI.Sub };
+        Controls.Add(logo); Controls.Add(title); Controls.Add(sub);
+        var startAll = Btn("Start all", () => hub.StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null));
+        startAll.Primary = true; startAll.Width = I(96); startAll.Height = I(34);
+        var upd = Btn("Updates…", hub.ShowUpdates); upd.Width = I(100); upd.Height = I(34);
+        startAll.Left = I(820 - 24) - startAll.Width; upd.Left = startAll.Left - I(8) - upd.Width; startAll.Top = upd.Top = I(28);
+        Controls.Add(startAll); Controls.Add(upd);
 
-        var bar = new FlowLayoutPanel { Left = I(18), Top = I(78), Width = I(724), Height = I(36), BackColor = UI.Page, WrapContents = false };
-        bar.Controls.Add(Btn("App theme…", () => ShowLookMenu(bar.Controls[0])));
-        bar.Controls.Add(Btn("Widget theme…", ThemeAll));
-        bar.Controls.Add(Btn("Suite settings…", () => { using (var f = new SuiteForm(this)) f.ShowDialog(this); }));
+        var bar = new FlowLayoutPanel { Left = I(22), Top = I(92), Width = I(776), Height = I(36), BackColor = UI.Page, WrapContents = false };
+        bar.Controls.Add(Btn("App theme", () => ShowLookMenu(bar.Controls[0])));
+        bar.Controls.Add(Btn("Widget theme", ThemeAll));
+        bar.Controls.Add(Btn("Suite settings", () => { using (var f = new SuiteForm(this)) f.ShowDialog(this); }));
         bar.Controls.Add(Btn("Back up all", BackupAll));
         bar.Controls.Add(Btn("Restore all…", RestoreAll));
-        bar.Controls.Add(Btn("Updates…", hub.ShowUpdates));
-        bar.Controls.Add(Btn("Start all", () => hub.StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null)));
+        var view = Btn(c.ListView ? "Card view" : "List view", () => { });
+        view.Click += (s, e) => { c.ListView = !c.ListView; c.Save(); view.Text = c.ListView ? "Card view" : "List view"; view.Fit(); LayoutRows(); };
+        view.Fit(); bar.Controls.Add(view);
         Controls.Add(bar);
 
-        list.SetBounds(I(16), I(122), I(728), I(430));
+        // the apps as cards, two to a row
+        list.SetBounds(I(20), I(136), I(784), I(486));
         KinetikSuite.Look.Current.ScrollBars(list);
         list.BackColor = UI.Page;
         Controls.Add(list);
-        int y = 0;
         foreach (var a in AppDef.All)
         {
-            var row = new AppRow(this, a, k) { Left = 0, Top = y, Width = I(708) };
+            var row = new AppRow(this, a, k, c.ListView);
             rows.Add(row); list.Controls.Add(row);
-            y += row.Height; // the rows join into one card, as in Kinetik's settings
         }
+        LayoutRows();
 
         loginBox.Text = "Start Kinetik Hub at login (it then starts the apps ticked \"At login\")";
-        loginBox.SetBounds(I(20), I(562), I(560), I(24)); loginBox.ForeColor = UI.Text;
+        loginBox.SetBounds(I(24), I(634), I(560), I(24)); loginBox.ForeColor = UI.Text;
         loginBox.Checked = Startup.IsOn;
         loginBox.CheckedChanged += (s, e) => { if (Program.Demo) return; Startup.Set(loginBox.Checked); };
         trayBox.Text = "Stay in the tray afterwards";
-        trayBox.SetBounds(I(20), I(586), I(260), I(24)); trayBox.ForeColor = UI.Text;
+        trayBox.SetBounds(I(24), I(658), I(260), I(24)); trayBox.ForeColor = UI.Text;
         trayBox.Checked = c.StayInTray;
         trayBox.CheckedChanged += (s, e) => { c.StayInTray = trayBox.Checked; c.Save(); };
         updBox.Text = "Check GitHub for updates once a day";
-        updBox.SetBounds(I(290), I(586), I(280), I(24)); updBox.ForeColor = UI.Text;
+        updBox.SetBounds(I(294), I(658), I(280), I(24)); updBox.ForeColor = UI.Text;
         updBox.Checked = c.CheckUpdates;
         updBox.CheckedChanged += (s, e) => { c.CheckUpdates = updBox.Checked; c.Save(); };
-        foot.SetBounds(I(20), I(612), I(720), I(22)); foot.ForeColor = UI.Sub;
+        foot.SetBounds(I(24), I(682), I(770), I(20)); foot.ForeColor = UI.Sub;
         Controls.AddRange(new Control[] { loginBox, trayBox, updBox, foot });
 
         poll.Tick += (s, e) => RefreshRows();
         poll.Start();
         RefreshRows();
+    }
+
+    // Cards two to a row, or one row per app.
+    void LayoutRows()
+    {
+        int n = 0;
+        foreach (var row in rows)
+        {
+            row.SetMode(c.ListView);
+            if (c.ListView) { row.Left = I(4); row.Top = I(n * (AppRow.LH + 8) + 4); }
+            else { row.Left = I((n % 2) * (AppRow.W + 10) + 4); row.Top = I((n / 2) * (AppRow.H + 12) + 4); }
+            n++;
+        }
+        list.AutoScrollPosition = new Point(0, 0);
     }
 
     FlatBtn Btn(string text, Action click)
@@ -1842,6 +1863,40 @@ class HubForm : Form
 // One app: its icon, name, where it is, whether it's running, what's new for it, and its buttons.
 class AppRow : Panel
 {
+    public const int W = 372, H = 148; // a card, at 96 dpi
+    public const int LW = 756, LH = 60; // a list row
+    bool compact;
+
+    // Card (two to a row) or list row (one per line): the same controls, placed differently.
+    public void SetMode(bool list)
+    {
+        compact = list;
+        int w = list ? LW : W, h = list ? LH : H;
+        Width = I(w); Height = I(h);
+        more.Left = I(w - 14) - more.Width;
+        stop.Left = more.Left - I(6) - stop.Width;
+        run.Left = stop.Left - I(6) - run.Width;
+        deploy.Left = run.Left - I(6) - deploy.Width;
+        more.Top = run.Top = stop.Top = deploy.Top = list ? I(16) : I(H - 40);
+        if (list)
+        {
+            pic.SetBounds(I(14), I(10), I(40), I(40));
+            name.SetBounds(I(70), I(8), I(175), I(24)); name.Font = new Font(Draw.Family, 10.5f, FontStyle.Bold);
+            where.SetBounds(I(70), I(32), I(w - 360), I(18)); where.Font = new Font(Draw.Family, 8.5f);
+            login.SetBounds(deploy.Left - I(106), I(18), I(100), I(24));
+            news.SetBounds(I(250), I(8), login.Left - I(254), I(24)); news.Font = new Font(Draw.Family, 8.5f, FontStyle.Bold);
+            where.Width = Math.Min(where.Width, login.Left - I(76));
+        }
+        else
+        {
+            pic.SetBounds(I(18), I(18), I(48), I(48));
+            name.SetBounds(I(84), I(16), I(W - 98), I(24)); name.Font = new Font(Draw.Family, 11f, FontStyle.Bold);
+            where.SetBounds(I(84), I(41), I(W - 98), I(18)); where.Font = new Font(Draw.Family, 8.5f);
+            news.SetBounds(I(84), I(60), I(W - 98), I(18)); news.Font = new Font(Draw.Family, 8.5f, FontStyle.Bold);
+            login.SetBounds(I(14), I(84), I(100), I(22));
+        }
+        Invalidate();
+    }
     readonly HubForm owner;
     readonly AppDef a;
     readonly float k;
@@ -1850,34 +1905,27 @@ class AppRow : Panel
     readonly CheckBox login = new CheckBox { Text = "At login" };
     readonly FlatBtn run, stop, deploy, more;
     readonly ContextMenuStrip moreMenu = KinetikSuite.MenuFocus.Attach(new ContextMenuStrip());
-    string iconFor, whereTip;
+    string iconFor = "?", whereTip;
     bool syncing;
     readonly ToolTip tips = new ToolTip();
 
     int I(float v) { return (int)Math.Round(v * k); }
 
-    public AppRow(HubForm owner, AppDef a, float scale)
+    public AppRow(HubForm owner, AppDef a, float scale, bool listMode)
     {
         this.owner = owner; this.a = a; k = scale;
-        Height = I(64); BackColor = UI.Card;
+        BackColor = UI.Card;
         DoubleBuffered = true;
-        pic.SetBounds(I(14), I(16), I(32), I(32)); pic.BackColor = UI.Card;
-        name.SetBounds(I(58), I(11), I(250), I(22)); name.Font = new Font(Draw.Family, 10.5f, FontStyle.Bold); name.ForeColor = UI.Text; name.BackColor = UI.Card;
-        where.SetBounds(I(58), I(34), I(330), I(20)); where.Font = new Font(Draw.Family, 8.5f); where.ForeColor = UI.Sub; where.BackColor = UI.Card;
-        news.SetBounds(I(250), I(11), I(150), I(22)); news.Font = new Font(Draw.Family, 8.5f, FontStyle.Bold); news.BackColor = UI.Card; news.TextAlign = ContentAlignment.MiddleLeft;
-        login.SetBounds(I(360), I(20), I(84), I(24)); login.ForeColor = UI.Text; login.BackColor = UI.Card;
+        name.ForeColor = UI.Text; name.BackColor = UI.Card;
+        where.ForeColor = UI.Sub; where.BackColor = UI.Card; where.AutoEllipsis = true;
+        news.BackColor = UI.Card; news.TextAlign = ContentAlignment.MiddleLeft; news.AutoEllipsis = true;
+        pic.BackColor = Color.Transparent;
+        login.ForeColor = UI.Text; login.BackColor = UI.Card;
         run = new FlatBtn("Start"); stop = new FlatBtn("Stop"); deploy = new FlatBtn("Deploy") { Primary = true }; more = new FlatBtn("⋯");
-        foreach (var b in new[] { run, stop, deploy, more }) b.Height = I(28);
+        foreach (var b in new[] { run, stop, deploy, more }) { b.Height = I(28); b.BackColor = UI.Card; }
         run.Width = I(70); stop.Width = I(58); deploy.Width = I(96); more.Width = I(32);
-        more.Top = run.Top = stop.Top = deploy.Top = I(18);
-        more.Left = I(708 - 14) - more.Width;
-        stop.Left = more.Left - I(6) - stop.Width;
-        run.Left = stop.Left - I(6) - run.Width;
-        deploy.Left = run.Left - I(6) - deploy.Width;
-        login.Left = deploy.Left - I(8) - login.Width;
-        news.SetBounds(I(250), I(11), login.Left - I(258), I(22));
-        where.Width = login.Left - where.Left - I(8);
         Controls.AddRange(new Control[] { pic, name, where, news, login, run, stop, deploy, more });
+        SetMode(listMode);
 
         run.Click += (s, e) => OnRun();
         stop.Click += (s, e) => { HubForm.StopApp(a); RefreshState(); };
@@ -1891,19 +1939,17 @@ class AppRow : Panel
         var g = e.Graphics;
         g.Clear(UI.Page);
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        // Rows join into one card: only the first row's top corners and the last row's bottom corners are round.
-        var kids = Parent == null ? null : Parent.Controls.OfType<AppRow>().ToList();
-        bool first = kids == null || kids.IndexOf(this) == 0, last = kids == null || kids.IndexOf(this) == kids.Count - 1;
-        var r = new RectangleF(0, 0, Width - 1, last ? Height - 1 : Height);
-        float d = I(10) * 2;
-        using (var p = new GraphicsPath())
+        var look = KinetikSuite.Look.Current;
+        var r = new RectangleF(0.5f, 0.5f, Width - 2, Height - 2);
+        using (var p = Draw.Round(r, I(compact ? 12 : 14)))
         {
-            if (first) { p.AddArc(r.X, r.Y, d, d, 180, 90); p.AddArc(r.Right - d, r.Y, d, d, 270, 90); } else p.AddLine(r.X, r.Y, r.Right, r.Y);
-            if (last) { p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90); p.AddArc(r.X, r.Bottom - d, d, d, 90, 90); } else p.AddLine(r.Right, r.Bottom, r.X, r.Bottom);
-            p.CloseFigure();
             using (var b = new SolidBrush(UI.Card)) g.FillPath(b, p);
+            using (var pen = new Pen(look.Border, 1)) g.DrawPath(pen, p);
         }
-        if (!first) using (var pen = new Pen(KinetikSuite.Look.Current.Border, 1)) g.DrawLine(pen, I(16), 0, Width - I(16), 0);
+        // the app's icon sits on a soft accent-tinted tile
+        var tile = compact ? new RectangleF(I(10), I(6), I(48), I(48)) : new RectangleF(I(14), I(14), I(56), I(56));
+        using (var p = Draw.Round(tile, I(compact ? 12 : 14)))
+        using (var br = new LinearGradientBrush(tile, Draw.Mix(UI.Card, UI.Text, 0.07f), Draw.Mix(UI.Card, UI.Text, 0.02f), 45f)) g.FillPath(br, p);
     }
 
     Settings C { get { return owner.Hub.Cfg; } }
@@ -1917,7 +1963,13 @@ class AppRow : Panel
         {
             iconFor = exe;
             var old = pic.Image; pic.Image = null; if (old != null) old.Dispose();
-            if (exe != null) try { using (var ic = Icon.ExtractAssociatedIcon(exe)) pic.Image = ic.ToBitmap(); } catch { }
+            // the suite's own icon (built into Hub), else whatever the exe carries
+            try
+            {
+                using (var rs = Assembly.GetExecutingAssembly().GetManifestResourceStream("icon-" + a.Id + ".png")) if (rs != null) pic.Image = new Bitmap(rs);
+                if (pic.Image == null && exe != null) using (var ic = Icon.ExtractAssociatedIcon(exe)) pic.Image = ic.ToBitmap();
+            }
+            catch { }
         }
         name.Text = a.Title;
         name.ForeColor = exe != null ? UI.Text : UI.Off;
@@ -1946,7 +1998,7 @@ class AppRow : Panel
         deploy.Text = canInstall ? "Install" : barNew || newer ? "Deploy build" : restart ? "Restart now" : "Update";
 
         run.Enabled = exe != null;
-        run.Text = on ? "Restart" : "Start";
+        run.Text = on ? "Restart" : "Start"; run.Primary = !on && exe != null && !deploy.Visible; run.Invalidate();
         stop.Enabled = on;
         syncing = true;
         if (a.Admin)
@@ -2177,7 +2229,7 @@ class SuiteForm : Form
     }
 
     static bool HasFont(string name) { try { using (var f = new FontFamily(name)) return f.Name == name; } catch { return false; } }
-    static string ThemeText(string t) { return t == "Auto" ? "Match Windows" : t == "App" ? "Match app theme" : t; }
+    static string ThemeText(string t) { return t == "Auto" ? "Match Windows" : t == "Midnight" ? "Dark" : t == "Light" ? "Light" : "Dark"; }
 
     CheckBox Row(string label, string key, Control input, ref int y, Func<object> value)
     {
@@ -2264,23 +2316,7 @@ class Theme
     public static readonly Theme[] All =
     {
         new Theme("Midnight", C(22, 22, 26), C(242, 242, 246), C(168, 168, 180), C(240, 88, 88), false),
-        new Theme("Navy", C(22, 27, 40), C(236, 240, 248), C(138, 150, 176), C(77, 166, 255), false),
-        new Theme("Graphite", C(40, 40, 44), C(236, 236, 236), C(160, 160, 166), C(255, 159, 10), false),
-        new Theme("Nord", C(46, 52, 64), C(236, 239, 244), C(152, 162, 182), C(136, 192, 208), false),
-        new Theme("Dracula", C(40, 42, 54), C(248, 248, 242), C(150, 156, 192), C(255, 121, 198), false),
-        new Theme("Solarized", C(0, 43, 54), C(238, 232, 213), C(131, 148, 150), C(203, 75, 22), false),
-        new Theme("Forest", C(22, 33, 27), C(228, 240, 231), C(138, 166, 148), C(108, 201, 124), false),
-        new Theme("Ocean", C(12, 29, 45), C(228, 242, 250), C(128, 160, 186), C(56, 198, 232), false),
-        new Theme("Sunset", C(40, 23, 35), C(250, 236, 240), C(192, 150, 172), C(255, 138, 92), false),
-        new Theme("Mono", C(10, 10, 10), C(245, 245, 245), C(140, 140, 140), C(245, 245, 245), false),
-        new Theme("OLED black", C(0, 0, 0), C(242, 242, 245), C(136, 136, 146), C(76, 194, 255), false),
-        new Theme("Mocha", C(30, 30, 46), C(205, 214, 244), C(147, 153, 178), C(203, 166, 247), false),
-        new Theme("Terminal", C(3, 10, 5), C(90, 255, 120), C(46, 170, 80), C(205, 255, 215), false),
-        new Theme("Amber terminal", C(12, 7, 0), C(255, 182, 40), C(185, 118, 22), C(255, 232, 180), false),
-        new Theme("Yellow terminal", C(0, 0, 0), C(255, 226, 0), C(200, 178, 0), C(255, 255, 190), false),
         new Theme("Light", C(246, 246, 248), C(24, 24, 28), C(96, 96, 106), C(230, 70, 70), true),
-        new Theme("Paper", C(250, 246, 236), C(52, 42, 32), C(132, 116, 96), C(204, 92, 52), true),
-        new Theme("Frost", C(236, 242, 250), C(20, 30, 48), C(92, 106, 132), C(40, 120, 230), true),
     };
 
     public static Theme Get(string name)
@@ -2484,7 +2520,7 @@ class ThemePicker : Form
         BackColor = Page;
         float k = DeviceDpi / 96f;
         var flow = new FlowLayoutPanel { Left = (int)(16 * k), Top = (int)(16 * k), Width = (int)(3 * 118 * k), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, MaximumSize = new Size((int)(3 * 118 * k), 0), WrapContents = true, BackColor = Page };
-        foreach (var name in new[] { "Auto", "App" }.Concat(Theme.All.Select(t => t.Name)))
+        foreach (var name in new[] { "Auto" }.Concat(Theme.All.Select(t => t.Name)))
         {
             var tile = new ThemeTile(name, name == current, k);
             tile.Click += (s, e) =>
@@ -2552,7 +2588,7 @@ class ThemeTile : Control
         }
         else Mini(g, inner, Theme.Get(ThemeName));
         using (var f = new Font(Draw.Family, 9f))
-            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName == "App" ? "Match app theme" : ThemeName, f, new Rectangle(0, Height - I(26), Width, I(20)), selected ? ThemePicker.TextCol : ThemePicker.SubCol,
+            TextRenderer.DrawText(g, ThemeName == "Auto" ? "Match Windows" : ThemeName == "Midnight" ? "Dark" : ThemeName, f, new Rectangle(0, Height - I(26), Width, I(20)), selected ? ThemePicker.TextCol : ThemePicker.SubCol,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
