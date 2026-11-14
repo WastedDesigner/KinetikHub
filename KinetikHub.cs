@@ -474,14 +474,19 @@ static class WidgetVisibility
     const string Flag = "KinetikHubHidden"; // widgets that redraw themselves (Clock, Weather) check it before re-showing
 
     static readonly List<IntPtr> hidden = new List<IntPtr>();
-    public static bool Hidden { get { hidden.RemoveAll(h => !IsWindow(h)); return hidden.Count > 0; } }
+    static bool on;
+    public static bool Hidden { get { return on; } }
 
     // the desktop widgets: not the taskbar bar (it lives in the taskbar) and not the window apps
     static bool IsWidget(AppDef a) { return a.ThemeField != null && !a.Admin; }
 
+    // The Stats desktop widget lives in an elevated process Hub can't touch, so it listens for these events instead.
+    static void SignalStats(string name) { try { using (var e = EventWaitHandle.OpenExisting("KinetikStats." + name)) e.Set(); } catch { } }
+
     public static void Toggle()
     {
-        if (Hidden) { foreach (var h in hidden) { RemoveProp(h, Flag); ShowWindow(h, 8); } hidden.Clear(); return; } // SW_SHOWNA: no focus steal
+        if (on) { foreach (var h in hidden) if (IsWindow(h)) { RemoveProp(h, Flag); ShowWindow(h, 8); } hidden.Clear(); on = false; SignalStats("ShowWidgets"); return; } // SW_SHOWNA: no focus steal
+        on = true; SignalStats("HideWidgets");
         var pids = new HashSet<uint>();
         foreach (var a in AppDef.All.Where(IsWidget))
             foreach (var p in Running.Of(a)) using (p) pids.Add((uint)p.Id);
