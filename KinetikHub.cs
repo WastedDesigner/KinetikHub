@@ -2108,7 +2108,7 @@ class AppRow : Panel
         if (a.Repo != null)
         {
             Add("Versions and release notes…", true, () => VersionsForm.Open(owner, owner.Hub, a));
-            Add("Releases on GitHub", true, () => { try { Process.Start("https://github.com/" + a.Repo + "/releases"); } catch { } });
+            Add("Releases on GitHub", true, () => { try { Process.Start(new ProcessStartInfo("https://github.com/" + a.Repo + "/releases") { UseShellExecute = true }); } catch { } });
         }
     }
 
@@ -3009,7 +3009,7 @@ class VersionsForm : Form
 
         list.SelectedIndexChanged += (s, e) => ShowRelease();
         install.Click += (s, e) => Install();
-        page.Click += (s, e) => { var r = Selected; try { Process.Start(r != null && !string.IsNullOrEmpty(r.Page) ? r.Page : "https://github.com/" + a.Repo + "/releases"); } catch { } };
+        page.Click += (s, e) => { var r = Selected; try { Process.Start(new ProcessStartInfo(r != null && !string.IsNullOrEmpty(r.Page) ? r.Page : "https://github.com/" + a.Repo + "/releases") { UseShellExecute = true }); } catch { } };
 
         status.Text = "Getting the releases from GitHub…";
         ThreadPool.QueueUserWorkItem(_ =>
