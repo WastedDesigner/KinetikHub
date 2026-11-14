@@ -459,6 +459,41 @@ static class Places
 }
 
 // ======================================================================= Running, starting and stopping the apps
+// Hides and shows the windows of the running widget apps from outside, so no app needs to know about it.
+// Only windows that were visible are hidden, and exactly those come back.
+static class WidgetVisibility
+{
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+    [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool SetProp(IntPtr h, string n, IntPtr v);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr RemoveProp(IntPtr h, string n);
+    const string Flag = "KinetikHubHidden"; // widgets that redraw themselves (Clock, Weather) check it before re-showing
+
+    static readonly List<IntPtr> hidden = new List<IntPtr>();
+    public static bool Hidden { get { hidden.RemoveAll(h => !IsWindow(h)); return hidden.Count > 0; } }
+
+    // the desktop widgets: not the taskbar bar (it lives in the taskbar) and not the window apps
+    static bool IsWidget(AppDef a) { return a.ThemeField != null && !a.Admin; }
+
+    public static void Toggle()
+    {
+        if (Hidden) { foreach (var h in hidden) { RemoveProp(h, Flag); ShowWindow(h, 8); } hidden.Clear(); return; } // SW_SHOWNA: no focus steal
+        var pids = new HashSet<uint>();
+        foreach (var a in AppDef.All.Where(IsWidget))
+            foreach (var p in Running.Of(a)) using (p) pids.Add((uint)p.Id);
+        EnumWindows((h, l) =>
+        {
+            uint pid; GetWindowThreadProcessId(h, out pid);
+            if (pids.Contains(pid) && IsWindowVisible(h)) { hidden.Add(h); SetProp(h, Flag, (IntPtr)1); ShowWindow(h, 0); }
+            return true;
+        }, IntPtr.Zero);
+    }
+}
+
 static class Running
 {
     static readonly object processGate = new object();
@@ -1513,6 +1548,7 @@ class HubContext : ApplicationContext
             menu.Items.Add(it);
         }
         menu.Items.Add(new ToolStripSeparator());
+        Add(menu.Items, WidgetVisibility.Hidden ? "Show all widgets" : "Hide all widgets", WidgetVisibility.Toggle);
         Add(menu.Items, "Start all", () => StartAll(AppDef.All.Where(a => Places.Installed(a) != null && (c.Starts(a.Id) || a.Admin)).ToList(), null));
         Add(menu.Items, "Restart running apps", () => RestartRunning(AppDef.All, null));
         var pending = AppDef.WithSelf.Where(a => UpdateFor(a) != null && UpdateFor(a).Zip != null).ToList();
@@ -1536,6 +1572,7 @@ class HubContext : ApplicationContext
     public void ExitHub()
     {
         if (Jobs.Busy) { Jobs.ShowError("A suite operation is still finishing. Close Hub after it completes."); return; }
+        if (WidgetVisibility.Hidden) WidgetVisibility.Toggle(); // never leave widgets hidden with nothing to show them
         tray.Visible = false;
         if (form != null && !form.IsDisposed) form.Dispose();
         ExitThread();
