@@ -3,11 +3,18 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**Kinetik Hub** is a free, open-source tray app for Windows 11 and Windows 10 that looks after the other Kinetik apps: [Kinetik](https://github.com/WastedDesigner/Kinetik), Kinetik Screen, [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), [Kinetik Clock](https://github.com/WastedDesigner/KinetikClock), [Kinetik Feeds](https://github.com/WastedDesigner/KinetikFeeds), [Kinetik Notes](https://github.com/WastedDesigner/KinetikNotes), Kinetik Weather, Kinetik Focus and Kinetik Dock.
+**Kinetik Hub** is a free, open-source tray app for Windows 11 and Windows 10 that looks after the other Kinetik apps: [Kinetik](https://github.com/WastedDesigner/Kinetik), Kinetik Screen, [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), [Kinetik Clock](https://github.com/WastedDesigner/KinetikClock), [Kinetik Feeds](https://github.com/WastedDesigner/KinetikFeeds), [Kinetik Notes](https://github.com/WastedDesigner/KinetikNotes), Kinetik Weather, Kinetik Files and [Kinetik Fonts](https://github.com/WastedDesigner/KinetikFonts).
 
 ![Kinetik Hub's window, listing each app with its version, status and buttons](screenshots/hub.png)
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please open an issue.
+
+## What's new in 2.1
+
+- **Kinetik Fonts:** Hub lists, installs, updates and starts [Kinetik Fonts](https://github.com/WastedDesigner/KinetikFonts), the font manager, like the other apps.
+- **Hide all widgets:** a tray item hides every Kinetik widget at once (Kinetik Stats' desktop widget too) and shows them again, and they come back when Hub exits.
+- **Links open on .NET 8:** *Release notes* and the other links open in your browser again.
+- **Updated app icons** for every app in Hub's list.
 
 ## What's new in 2.0
 
@@ -52,17 +59,17 @@ Settings are kept in `HKCU\Software\KinetikHub`. The only network requests are t
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with .NET Framework 4.8, which ships with both.
+Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
 
 ## Building from source
 
-No SDK needed: `build.bat` compiles `KinetikHub.cs` with the .NET Framework compiler that ships with Windows. `build.bat package` also makes `KinetikHub.zip` for a release.
+Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikHub.exe` in this folder.
 
 `KinetikHub.exe --demo` runs a separate copy that saves no settings, `--shot file.png` draws its window into a PNG and quits, and `--report file.txt` writes what Hub finds for each app (where it is, its working build, how it starts) without changing anything.
 
 ## Tests and packaging
 
-`python tests/run-tests.py` runs the regression checks (no window opens). `build.bat package` builds the exe and makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
+`python tests/run-tests.py` runs the regression checks (no window opens). `powershell -File package.ps1 -App KinetikHub` (after the publish above) makes the release zip, checking every file in it against its SHA-256 hash. The shared support code (`SuiteSupport.cs`) is compiled into the exe, so there's no extra DLL.
 
 **Updates:** Hub installs a release only when it can check it, by GitHub's SHA-256 digest of the zip or by the exe's SHA-256 in the release notes. Older releases without either have to be installed by hand. Without signing in, GitHub allows 60 update checks an hour; a full check uses one per app, and Hub says when the limit is reached and when it resets. Hub closes an app by asking it to shut down; an app too old to answer has to be closed from its own tray menu first.
 

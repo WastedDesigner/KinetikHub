@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.0.1.0")]
-[assembly: AssemblyFileVersion("2.0.1.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
 
 static class Program
 {
-    public const string Version = "2.0.1";
+    public const string Version = "2.1.0";
     public static bool Demo, AtStartup, OpenUpdates;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -306,6 +306,8 @@ class AppDef
         // A window app, not a widget, so no shared look settings. It builds into <Apps>\Kinetik Files\dist\, and its
         // GitHub repo is private with no releases, so Hub doesn't look for updates.
         new AppDef { Id = "KinetikFiles", Title = "Kinetik Files", Folder = "Kinetik Files", Source = "dist", Blurb = "File manager" },
+        // A window app like Files, so no shared look settings; it follows the app theme on its own.
+        new AppDef { Id = "KinetikFonts", Title = "Kinetik Fonts", Folder = "Kinetik Fonts", Source = "KinetikFonts", Repo = "WastedDesigner/KinetikFonts", Blurb = "Font manager" },
     };
 
     public static AppDef Get(string id) { return All.FirstOrDefault(a => a.Id.Equals(id, StringComparison.OrdinalIgnoreCase)); }
