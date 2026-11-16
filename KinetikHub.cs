@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.1.0.0")]
-[assembly: AssemblyFileVersion("2.1.0.0")]
+[assembly: AssemblyVersion("2.1.1.0")]
+[assembly: AssemblyFileVersion("2.1.1.0")]
 
 static class Program
 {
-    public const string Version = "2.1.0";
+    public const string Version = "2.1.1";
     public static bool Demo, AtStartup, OpenUpdates;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -112,6 +112,23 @@ static class Program
         OpenUpdates = args.Contains("--updates");
         int si = Array.IndexOf(args, "--shot");
         if (si >= 0 && si + 1 < args.Length) { ShotPath = Path.GetFullPath(args[si + 1]); Demo = true; }
+        int ssi = Array.IndexOf(args, "--spin-sheet"); // test aid: the tray icon's twelve frames at 16, 24 and 32 px, enlarged, in a PNG
+        if (ssi >= 0 && ssi + 1 < args.Length)
+        {
+            int[] sizes = { 16, 24, 32 };
+            using (var sheet = new Bitmap(12 * 70 + 10, sizes.Length * 70 + 10))
+            using (var g = Graphics.FromImage(sheet))
+            {
+                g.Clear(Color.FromArgb(32, 32, 36)); g.InterpolationMode = InterpolationMode.NearestNeighbor; g.PixelOffsetMode = PixelOffsetMode.Half;
+                for (int r = 0; r < sizes.Length; r++)
+                {
+                    var frames = TrayFrames.Build(sizes[r], KinetikSuite.Look.Current.Accent);
+                    for (int i = 0; i < frames.Count; i++) { g.DrawImage(frames[i], 10 + i * 70, 10 + r * 70, 64, 64); frames[i].Dispose(); }
+                }
+                sheet.Save(Path.GetFullPath(args[ssi + 1]));
+            }
+            return 0;
+        }
         bool created;
         using (new Mutex(true, Demo ? @"Local\KinetikHubDemo" : @"Local\KinetikHub", out created))
         {
@@ -306,6 +323,7 @@ class AppDef
         // A window app, not a widget, so no shared look settings. It builds into <Apps>\Kinetik Files\dist\, and its
         // GitHub repo is private with no releases, so Hub doesn't look for updates.
         new AppDef { Id = "KinetikFiles", Title = "Kinetik Files", Folder = "Kinetik Files", Source = "dist", Blurb = "File manager" },
+        new AppDef { Id = "KinetikFocus", Title = "Kinetik Focus", Folder = "Kinetik Focus", Source = "KinetikFocus", Repo = "WastedDesigner/KinetikFocus", ThemeField = "ThemeName", Blurb = "Focus timer" },
         // A window app like Files, so no shared look settings; it follows the app theme on its own.
         new AppDef { Id = "KinetikFonts", Title = "Kinetik Fonts", Folder = "Kinetik Fonts", Source = "KinetikFonts", Repo = "WastedDesigner/KinetikFonts", Blurb = "Font manager" },
     };
@@ -801,21 +819,53 @@ static class Lnk
     }
 }
 
+// The tray icon with a spinner running round its edge: twelve frames, drawn when Hub starts working.
+static class TrayFrames
+{
+    public static List<Bitmap> Build(int size, Color accent)
+    {
+        var list = new List<Bitmap>();
+        using (var st = Assembly.GetExecutingAssembly().GetManifestResourceStream("icon.ico"))
+        {
+            if (st == null) return list;
+            using (var ic = new Icon(st, new Size(size, size)))
+            using (var baseBmp = ic.ToBitmap())
+                for (int i = 0; i < 12; i++)
+                {
+                    var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.SmoothingMode = SmoothingMode.AntiAlias;
+                        g.DrawImage(baseBmp, 0, 0, size, size);
+                        float w = Math.Max(2f, size / 8f), r = w / 2f + 0.5f;
+                        for (int k = 0; k < 3; k++) // a bright head and a fading tail
+                            using (var pen = new Pen(Color.FromArgb(255 - k * 85, accent), w) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                                g.DrawArc(pen, r, r, size - 2 * r, size - 2 * r, i * 30 - 90 - k * 34, 34);
+                    }
+                    list.Add(bmp);
+                }
+        }
+        return list;
+    }
+}
+
 static class Jobs
 {
     static bool busy;
+    public static event Action Changed; // raised on the UI thread when work starts and stops (the tray icon turns while it runs)
+    static void Raise() { var h = Changed; if (h != null) h(); }
     public static volatile string Progress = "";
     public static bool Busy { get { return busy; } }
     public static void Run(Func<string> work, Action<string> done)
     {
         if (busy) { done("Another suite operation is still running. Wait for it to finish."); return; }
-        busy = true; Progress = "Applying app changes…";
+        busy = true; Progress = "Applying app changes…"; Raise();
         var ui = new Control(); var handle = ui.Handle;
         ThreadPool.QueueUserWorkItem(_ =>
         {
             string error = null;
             try { error = work(); } catch (Exception ex) { error = ex.Message; }
-            try { ui.BeginInvoke((Action)(() => { busy = false; Progress = ""; try { done(error); } finally { ui.Dispose(); } })); }
+            try { ui.BeginInvoke((Action)(() => { busy = false; Progress = ""; Raise(); try { done(error); } finally { ui.Dispose(); } })); }
             catch { busy = false; ui.Dispose(); }
         });
     }
@@ -1305,6 +1355,9 @@ class HubContext : ApplicationContext
         Places.Cfg = c;
         invoker.CreateControl();
         try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { tray.Icon = SystemIcons.Application; }
+        trayBase = tray.Icon;
+        spin.Tick += (s, e) => { if (spinFrames != null) { spinAt = (spinAt + 1) % spinFrames.Length; tray.Icon = spinFrames[spinAt]; } };
+        Jobs.Changed += SyncTray;
         tray.Text = Program.Demo ? "Kinetik Hub (demo)" : "Kinetik Hub";
         tray.ContextMenuStrip = menu;
         menu.Opening += (s, e) => BuildMenu();
@@ -1416,6 +1469,7 @@ class HubContext : ApplicationContext
         DateTime last;
         if (!now && (!c.CheckUpdates || (DateTime.TryParse(c.LastCheck, null, DateTimeStyles.RoundtripKind, out last) && (DateTime.UtcNow - last).TotalHours < 20))) return;
         checkingUpdates = true;
+        SyncTray();
         ThreadPool.QueueUserWorkItem(_ =>
         {
             var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1428,6 +1482,7 @@ class HubContext : ApplicationContext
                 invoker.BeginInvoke((Action)(() =>
                 {
                     checkingUpdates = false;
+                    SyncTray();
                     var map = Settings.Map(c.Latest);
                     foreach (var p in found) map[p.Key] = p.Value;
                     c.Latest = Settings.Unmap(map);
@@ -1585,9 +1640,54 @@ class HubContext : ApplicationContext
         ExitThread();
     }
 
+    // ---- the tray icon turns while Hub is working: checking GitHub, installing, updating, starting or restarting apps
+    [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
+    [DllImport("user32.dll")] static extern bool SystemParametersInfo(int action, int param, out bool value, int winIni);
+    Icon trayBase;
+    readonly System.Windows.Forms.Timer spin = new System.Windows.Forms.Timer { Interval = 85 };
+    Icon[] spinFrames; IntPtr[] spinHandles; int spinAt; bool spinning;
+
+    // Windows' "Animation effects" switch (Settings → Accessibility): off means no spinning.
+    static bool AnimationsOn() { bool on; return !SystemParametersInfo(0x1042, 0, out on, 0) || on; } // SPI_GETCLIENTAREAANIMATION
+
+    void SyncTray()
+    {
+        bool working = Jobs.Busy || checkingUpdates;
+        if (working == spinning) return;
+        spinning = working;
+        if (working)
+        {
+            tray.Text = checkingUpdates ? "Kinetik Hub: checking for updates…" : "Kinetik Hub: working…";
+            if (!AnimationsOn()) return;
+            try
+            {
+                var bitmaps = TrayFrames.Build(Math.Max(16, SystemInformation.SmallIconSize.Width), KinetikSuite.Look.Current.Accent);
+                if (bitmaps.Count == 0) return;
+                spinFrames = new Icon[bitmaps.Count]; spinHandles = new IntPtr[bitmaps.Count];
+                for (int i = 0; i < bitmaps.Count; i++) { spinHandles[i] = bitmaps[i].GetHicon(); spinFrames[i] = Icon.FromHandle(spinHandles[i]); bitmaps[i].Dispose(); }
+                spinAt = 0; spin.Start();
+            }
+            catch { FreeSpin(); }
+        }
+        else
+        {
+            spin.Stop();
+            tray.Icon = trayBase;
+            FreeSpin();
+            tray.Text = Program.Demo ? "Kinetik Hub (demo)" : "Kinetik Hub";
+        }
+    }
+
+    void FreeSpin()
+    {
+        spinFrames = null;
+        if (spinHandles != null) foreach (var h in spinHandles) if (h != IntPtr.Zero) DestroyIcon(h);
+        spinHandles = null;
+    }
+
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { showWait.Unregister(null); tray.Dispose(); menu.Dispose(); daily.Dispose(); showEvent.Dispose(); invoker.Dispose(); }
+        if (disposing) { Jobs.Changed -= SyncTray; spin.Dispose(); tray.Icon = trayBase; FreeSpin(); showWait.Unregister(null); tray.Dispose(); menu.Dispose(); daily.Dispose(); showEvent.Dispose(); invoker.Dispose(); }
         base.Dispose(disposing);
     }
 }

@@ -3,11 +3,16 @@
 [![License: GPL v3](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4)
 
-**Kinetik Hub** is a free, open-source tray app for Windows 11 and Windows 10 that looks after the other Kinetik apps: [Kinetik](https://github.com/WastedDesigner/Kinetik), Kinetik Screen, [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), [Kinetik Clock](https://github.com/WastedDesigner/KinetikClock), [Kinetik Feeds](https://github.com/WastedDesigner/KinetikFeeds), [Kinetik Notes](https://github.com/WastedDesigner/KinetikNotes), Kinetik Weather, Kinetik Files and [Kinetik Fonts](https://github.com/WastedDesigner/KinetikFonts).
+**Kinetik Hub** is a free, open-source tray app for Windows 11 and Windows 10 that looks after the other Kinetik apps: [Kinetik](https://github.com/WastedDesigner/Kinetik), Kinetik Screen, [Kinetik Calendar](https://github.com/WastedDesigner/KinetikCalendar), [Kinetik Clock](https://github.com/WastedDesigner/KinetikClock), [Kinetik Feeds](https://github.com/WastedDesigner/KinetikFeeds), [Kinetik Notes](https://github.com/WastedDesigner/KinetikNotes), Kinetik Weather, Kinetik Focus, Kinetik Files and [Kinetik Fonts](https://github.com/WastedDesigner/KinetikFonts).
 
 ![Kinetik Hub's window, listing each app with its version, status and buttons](screenshots/hub.png)
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please open an issue.
+
+## What's new in 2.1.1
+
+- **Moving tray icon:** the tray icon turns while Hub is working: checking GitHub, installing or updating apps, and starting or restarting them. It stays still if Windows' *Animation effects* are off.
+- **Kinetik Focus is back** in Hub's list, with a new icon to match the other apps.
 
 ## What's new in 2.1
 
