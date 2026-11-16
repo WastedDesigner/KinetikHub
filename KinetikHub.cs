@@ -23,12 +23,12 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("Kinetik Hub")]
 [assembly: AssemblyProduct("Kinetik Hub")]
 [assembly: AssemblyCopyright("Copyright © 2026 Akila Sella Hennedige")]
-[assembly: AssemblyVersion("2.1.1.0")]
-[assembly: AssemblyFileVersion("2.1.1.0")]
+[assembly: AssemblyVersion("2.1.2.0")]
+[assembly: AssemblyFileVersion("2.1.2.0")]
 
 static class Program
 {
-    public const string Version = "2.1.1";
+    public const string Version = "2.1.2";
     public static bool Demo, AtStartup, OpenUpdates;
     public static string ShotPath; // --shot file.png: draws the window into a PNG and quits (for the README screenshot)
     [DllImport("user32.dll")] static extern bool SetProcessDPIAware();
@@ -1200,7 +1200,8 @@ static class Updates
             if (executables.Length != 1) throw new IOException("The release must contain exactly one " + a.Exe);
             var exe = executables[0];
             if (r.ExeSha != null && !string.Equals(KinetikSuite.Hashes.FileHash(exe), r.ExeSha, StringComparison.OrdinalIgnoreCase)) throw new IOException("The executable checksum does not match.");
-            var identity = AssemblyName.GetAssemblyName(exe).Name;
+            // .NET 8 single-file exes carry no assembly manifest, so GetAssemblyName throws; the version resource names the app in both cases
+            var identity = Path.GetFileNameWithoutExtension(FileVersionInfo.GetVersionInfo(exe).InternalName ?? "");
             if (identity != a.Id && identity != a.Id + ".new") throw new IOException("The release contains a different application.");
             if (Places.VersionOf(exe) != r.V) throw new IOException("The executable version does not match the release tag.");
             return exe;

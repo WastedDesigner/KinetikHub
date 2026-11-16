@@ -9,6 +9,10 @@
 
 > **About this project:** I made this for my own desktop and decided to share it in case anyone else finds it useful. If you run into a bug or have an idea for a feature, please open an issue.
 
+## What's new in 2.1.2
+
+- **Updates work for .NET 8 apps:** Hub's check of a downloaded app failed on the newer single-file exes ("PE image does not have metadata"). It now reads the app name from the exe's version info.
+
 ## What's new in 2.1.1
 
 - **Moving tray icon:** the tray icon turns while Hub is working: checking GitHub, installing or updating apps, and starting or restarting them. It stays still if Windows' *Animation effects* are off.
