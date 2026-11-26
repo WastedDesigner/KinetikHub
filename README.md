@@ -68,11 +68,11 @@ Settings are kept in `HKCU\Software\KinetikHub`. The only network requests are t
 
 ## Requirements
 
-Windows 10 or 11 (64-bit) with the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0) (x64).
+Windows 10 or 11 (64-bit) with the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) (x64).
 
 ## Building from source
 
-Needs the .NET 8 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikHub.exe` in this folder.
+Needs the .NET 10 SDK: `dotnet publish -c Release -p:PublishSingleFile=true -p:DebugType=none -o .` writes `KinetikHub.exe` in this folder.
 
 `KinetikHub.exe --demo` runs a separate copy that saves no settings, `--shot file.png` draws its window into a PNG and quits, and `--report file.txt` writes what Hub finds for each app (where it is, its working build, how it starts) without changing anything.
 
